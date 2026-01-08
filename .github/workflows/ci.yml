@@ -19,4 +19,4 @@ jobs:
           version: 0.15.2
 
       - name: Run Tests
-        run: zig build test
+        run: zig build test --summary all
