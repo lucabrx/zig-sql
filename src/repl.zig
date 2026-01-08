@@ -1,6 +1,8 @@
 const std = @import("std");
 const lexer = @import("lexer/lexer.zig");
 const token = @import("lexer/token.zig");
+const parser = @import("parser/parser.zig");
+const ast = @import("parser/ast.zig");
 
 pub const MetaCommandResult = enum {
     Success,
@@ -98,21 +100,40 @@ pub const REPL = struct {
             if (tokens.len == 0) {
                 return;
             }
-
-            switch (tokens[0].type) {
-                .select => {
-                    _ = try self.writer.write("SELECT statement\n");
-                },
-                .insert => {
-                    _ = try self.writer.write("INSERT statement\n");
-                },
-                else => {
-                    var b: [128]u8 = undefined;
-                    const m = try std.fmt.bufPrint(&b, "Unrecognized keyword at start of '{s}'.\n", .{input});
-                    _ = try self.writer.write(m);
-                },
-            }
         }
+
+        var p = parser.Parser.init(tokens, allocator);
+        const stmt = p.parse() catch |err| {
+            try self.writer.print("Parse error: {s}\n", .{@errorName(err)});
+            if (p.hasErrors()) {
+                try p.printErrors(self.writer);
+            }
+            return;
+        };
+
+        try self.print_ast(stmt);
         try self.writer.flush();
+    }
+
+    fn print_ast(self: *REPL, stmt: ast.Statement) !void {
+        switch (stmt) {
+            .create_table_stmt => |create_stmt| {
+                try self.writer.print("CREATE TABLE {s}\n", .{create_stmt.table});
+                try self.writer.writeAll("Columns:\n");
+                for (create_stmt.columns) |col| {
+                    try self.writer.print("  - {s} {s}", .{ col.name, col.type_name });
+                    if (col.primary_key) {
+                        try self.writer.writeAll(" PRIMARY KEY");
+                    }
+                    if (col.not_null) {
+                        try self.writer.writeAll(" NOT NULL");
+                    }
+                    try self.writer.writeAll("\n");
+                }
+            },
+            else => {
+                try self.writer.writeAll("Statement type not yet supported in REPL\n");
+            },
+        }
     }
 };

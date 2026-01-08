@@ -19,4 +19,6 @@ test {
     _ = @import("helpers.zig");
     _ = @import("lexer/lexer.zig");
     _ = @import("lexer/token.zig");
+    _ = @import("parser/ast.zig");
+    _ = @import("parser/parser.zig");
 }
