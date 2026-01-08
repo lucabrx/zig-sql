@@ -14,3 +14,9 @@ pub fn main() !void {
     var r = repl.REPL.init(":memory:", writer, reader);
     try r.run();
 }
+
+test {
+    _ = @import("helpers.zig");
+    _ = @import("lexer/lexer.zig");
+    _ = @import("lexer/token.zig");
+}
