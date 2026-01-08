@@ -149,6 +149,18 @@ pub const REPL = struct {
                     }
                 }
             },
+            .select_stmt => |select_stmt| {
+                try self.writer.print("SELECT Statement\n", .{});
+                try self.writer.writeAll("Columns:\n");
+                for (select_stmt.columns) |col| {
+                    switch (col) {
+                        .star_expression => try self.writer.writeAll("  - *\n"),
+                        .identifier => |ident| try self.writer.print("  - {s}\n", .{ident.name}),
+                        else => try self.writer.writeAll("  - <expression>\n"),
+                    }
+                }
+                try self.writer.print("From Table: {s}\n", .{select_stmt.from});
+            },
             else => {
                 try self.writer.writeAll("Statement type not yet supported in REPL\n");
             },
