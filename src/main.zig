@@ -20,7 +20,3 @@ test {
     _ = @import("lexer/lexer.zig");
     _ = @import("lexer/token.zig");
 }
-
-test "fail" {
-    try std.testing.expect(false);
-}
