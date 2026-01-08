@@ -7,6 +7,7 @@ const expressions = @import("expressions.zig");
 const create = @import("create.zig");
 const insert = @import("insert.zig");
 const select = @import("select.zig");
+const other = @import("other.zig");
 
 pub const ParseError = error{
     UnexpectedToken,
@@ -131,6 +132,24 @@ pub const Parser = struct {
                 const stmt = try select.parse_select(self);
                 return ast.Statement{
                     .select_stmt = stmt,
+                };
+            },
+            token.TokenType.update => {
+                const stmt = try other.parse_update(self);
+                return ast.Statement{
+                    .update_stmt = stmt,
+                };
+            },
+            token.TokenType.delete => {
+                const stmt = try other.parse_Delete(self);
+                return ast.Statement{
+                    .delete_stmt = stmt,
+                };
+            },
+            token.TokenType.drop => {
+                const stmt = try other.parse_drop(self);
+                return ast.Statement{
+                    .drop_table_stmt = stmt,
                 };
             },
             else => {

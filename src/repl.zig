@@ -161,8 +161,56 @@ pub const REPL = struct {
                 }
                 try self.writer.print("From Table: {s}\n", .{select_stmt.from});
             },
-            else => {
-                try self.writer.writeAll("Statement type not yet supported in REPL\n");
+            .update_stmt => |update_stmt| {
+                try self.writer.print("UPDATE {s}\n", .{update_stmt.table});
+                try self.writer.writeAll("Set:\n");
+                for (update_stmt.set) |assignment| {
+                    switch (assignment.value) {
+                        .integer_literal => |int_lit| try self.writer.print("  - {s} = {d}\n", .{ assignment.column, int_lit.value }),
+                        .string_literal => |str_lit| try self.writer.print("  - {s} = '{s}'\n", .{ assignment.column, str_lit.value }),
+                        else => try self.writer.print("  - {s} = <expression>\n", .{assignment.column}),
+                    }
+                }
+                if (update_stmt.where) |where| {
+                    try self.writer.writeAll("Where: ");
+                    try self.format_expression(where);
+                    try self.writer.writeAll("\n");
+                }
+            },
+            .delete_stmt => |delete_stmt| {
+                try self.writer.print("DELETE FROM {s}\n", .{delete_stmt.table});
+                if (delete_stmt.where) |where| {
+                    try self.writer.writeAll("Where: ");
+                    try self.format_expression(where);
+                    try self.writer.writeAll("\n");
+                }
+            },
+            .drop_table_stmt => |drop_stmt| {
+                try self.writer.print("DROP TABLE", .{});
+                if (drop_stmt.if_exists) {
+                    try self.writer.writeAll(" IF EXISTS");
+                }
+                try self.writer.print(" {s}\n", .{drop_stmt.table});
+            },
+        }
+    }
+
+    fn format_expression(self: *REPL, expr: ast.Expression) !void {
+        switch (expr) {
+            .identifier => |ident| try self.writer.print("{s}", .{ident.name}),
+            .integer_literal => |int_lit| try self.writer.print("{d}", .{int_lit.value}),
+            .float_literal => |float_lit| try self.writer.print("{d}", .{float_lit.value}),
+            .string_literal => |str_lit| try self.writer.print("'{s}'", .{str_lit.value}),
+            .null_literal => try self.writer.writeAll("NULL"),
+            .star_expression => try self.writer.writeAll("*"),
+            .binary_expression => |bin_expr| {
+                try self.format_expression(bin_expr.left);
+                try self.writer.print(" {s} ", .{bin_expr.operator});
+                try self.format_expression(bin_expr.right);
+            },
+            .unary_expression => |unary_expr| {
+                try self.writer.print("{s} ", .{unary_expr.operator});
+                try self.format_expression(unary_expr.right);
             },
         }
     }
