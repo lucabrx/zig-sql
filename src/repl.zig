@@ -1,4 +1,6 @@
 const std = @import("std");
+const lexer = @import("lexer/lexer.zig");
+const token = @import("lexer/token.zig");
 
 pub const MetaCommandResult = enum {
     Success,
@@ -77,35 +79,39 @@ pub const REPL = struct {
         }
     }
 
-    fn execute_statement(self: *REPL, stmt: []const u8) !void {
-        const Statement = enum {
-            select,
-            insert,
-            create_table,
-        };
+    fn execute_statement(self: *REPL, input: []const u8) !void {
+        var l = lexer.Lexer.init(input);
+        const allocator = std.heap.page_allocator;
 
-        var statement: ?Statement = null;
-        inline for (@typeInfo(Statement).@"enum".fields) |f| {
-            if (std.ascii.eqlIgnoreCase(stmt, f.name)) {
-                statement = @enumFromInt(f.value);
+        const tokens = try l.tokenize(allocator);
+        defer allocator.free(tokens);
+
+        _ = try self.writer.write("[DEBUG] Tokens: \n");
+        for (tokens) |t| {
+            if (t.type == token.TokenType.eof) {
                 break;
             }
-        }
+            var buf: [128]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&buf, "TYPE: {} - Literal: {s}\n", .{ t.type, t.literal });
+            _ = try self.writer.write(msg);
 
-        if (statement) |s| {
-            switch (s) {
+            if (tokens.len == 0) {
+                return;
+            }
+
+            switch (tokens[0].type) {
                 .select => {
                     _ = try self.writer.write("SELECT statement\n");
                 },
                 .insert => {
                     _ = try self.writer.write("INSERT statement\n");
                 },
-                .create_table => {
-                    _ = try self.writer.write("CREATE TABLE statement\n");
+                else => {
+                    var b: [128]u8 = undefined;
+                    const m = try std.fmt.bufPrint(&b, "Unrecognized keyword at start of '{s}'.\n", .{input});
+                    _ = try self.writer.write(m);
                 },
             }
-        } else {
-            _ = try self.writer.write("Unrecognized statement\n");
         }
         try self.writer.flush();
     }
