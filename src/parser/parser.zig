@@ -5,6 +5,7 @@ const token = @import("../lexer/token.zig");
 
 const expressions = @import("expressions.zig");
 const create = @import("create.zig");
+const insert = @import("insert.zig");
 
 pub const ParseError = error{
     UnexpectedToken,
@@ -116,6 +117,12 @@ pub const Parser = struct {
                     .create_table_stmt = stmt,
                 };
             },
+            token.TokenType.insert => {
+                const stmt = try insert.parse_insert(self);
+                return ast.Statement{
+                    .insert_stmt = stmt,
+                };
+            },
             else => {
                 self.addError("Unexpected token '{s}' at start of statement", .{@tagName(self.current.type)});
                 return error.UnexpectedToken;
@@ -129,6 +136,7 @@ pub const Parser = struct {
     pub const parse_primary_expression = expressions.parse_primary_expression;
 
     pub const parse_create = create.parse_create;
+    pub const parse_insert = insert.parse_insert;
 };
 
 test "parser tokenization" {

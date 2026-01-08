@@ -131,6 +131,24 @@ pub const REPL = struct {
                     try self.writer.writeAll("\n");
                 }
             },
+            .insert_stmt => |insert_stmt| {
+                try self.writer.print("INSERT INTO {s}\n", .{insert_stmt.table});
+                try self.writer.writeAll("Columns:\n");
+                for (insert_stmt.columns) |col| {
+                    try self.writer.print("  - {s}\n", .{col});
+                }
+                try self.writer.writeAll("Values:\n");
+                for (insert_stmt.values) |val| {
+                    switch (val) {
+                        .integer_literal => |int_lit| try self.writer.print("  - {d}\n", .{int_lit.value}),
+                        .float_literal => |float_lit| try self.writer.print("  - {d}\n", .{float_lit.value}),
+                        .string_literal => |str_lit| try self.writer.print("  - '{s}'\n", .{str_lit.value}),
+                        .null_literal => try self.writer.writeAll("  - NULL\n"),
+                        .identifier => |ident| try self.writer.print("  - {s}\n", .{ident.name}),
+                        else => try self.writer.print("  - {any}\n", .{val}),
+                    }
+                }
+            },
             else => {
                 try self.writer.writeAll("Statement type not yet supported in REPL\n");
             },

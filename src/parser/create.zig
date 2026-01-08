@@ -38,7 +38,7 @@ pub fn parse_create(self: *Parser) ParseError!ast.CreateTableStatement {
 }
 
 fn parse_column_defs(self: *Parser) ParseError![]ast.ColumnDef {
-    var cols = std.ArrayListUnmanaged(ast.ColumnDef){};
+    var cols = std.ArrayList(ast.ColumnDef){};
     defer cols.deinit(self.allocator);
 
     while (true) {
