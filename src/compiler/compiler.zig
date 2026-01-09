@@ -5,12 +5,11 @@ const Opcode = @import("../vm/opcode.zig").Opcode;
 const ast = @import("../parser/ast.zig");
 const Statement = ast.Statement;
 
-pub const CompilerError = error{
-    NotImplemented,
-    TableNotFound,
-    ColumnNotFound,
-    OutOfMemory,
-};
+const select = @import("select.zig");
+const insert = @import("insert.zig");
+const delete = @import("delete.zig");
+const update = @import("update.zig");
+const schema = @import("schema.zig");
 
 pub const Compiler = struct {
     db: *DB,
@@ -38,20 +37,20 @@ pub const Compiler = struct {
         try self.emit(.init, 0, 0, 0, "", null);
 
         switch (stmt) {
-            .select_stmt => |s| try self.compile_select(s),
-            .insert_stmt => |s| try self.compile_insert(s),
-            .create_table_stmt => |s| try self.compile_create_table(s),
-            .delete_stmt => |s| try self.compile_delete(s),
-            .update_stmt => |s| try self.compile_update(s),
-            .drop_table_stmt => |s| try self.compile_drop_table(s),
+            .select_stmt => |s| try select.compile_select(self, s),
+            .insert_stmt => |s| try insert.compile_insert(self, s),
+            .create_table_stmt => |s| try schema.compile_create_table(self, s),
+            .delete_stmt => |s| try delete.compile_delete(self, s),
+            .update_stmt => |s| try update.compile_update(self, s),
+            .drop_table_stmt => |s| try schema.compile_drop_table(self, s),
         }
 
-        try self.emit(.halt, 0, 0, 0, "", null); // halt means end of program
+        try self.emit(.halt, 0, 0, 0, "", null);
 
         return self.instructions.items;
     }
 
-    fn emit(self: *Compiler, op: Opcode, p1: i32, p2: i32, p3: i32, p4: []const u8, p5: ?*anyopaque) !usize {
+    pub fn emit(self: *Compiler, op: Opcode, p1: i32, p2: i32, p3: i32, p4: []const u8, p5: ?*anyopaque) !usize {
         const inst = Instruction{
             .op = op,
             .p1 = p1,
@@ -64,54 +63,18 @@ pub const Compiler = struct {
         return self.instructions.items.len - 1;
     }
 
-    fn alloc_reg(self: *Compiler) i32 {
+    pub fn alloc_reg(self: *Compiler) i32 {
         const reg = self.next_reg;
         self.next_reg += 1;
         return reg;
     }
 
-    fn current_addr(self: *Compiler) usize {
+    pub fn current_addr(self: *Compiler) usize {
         return self.instructions.items.len;
     }
 
-    fn patch(self: *Compiler, addr: usize, target: i32) void {
+    pub fn patch(self: *Compiler, addr: usize, target: i32) void {
         self.instructions.items[addr].p2 = target;
-    }
-
-    fn compile_select(self: *Compiler, stmt: ast.SelectStatement) !void {
-        _ = self;
-        _ = stmt;
-        return CompilerError.NotImplemented;
-    }
-
-    fn compile_insert(self: *Compiler, stmt: ast.InsertStatement) !void {
-        _ = self;
-        _ = stmt;
-        return CompilerError.NotImplemented;
-    }
-
-    fn compile_create_table(self: *Compiler, stmt: ast.CreateTableStatement) !void {
-        _ = self;
-        _ = stmt;
-        return CompilerError.NotImplemented;
-    }
-
-    fn compile_delete(self: *Compiler, stmt: ast.DeleteStatement) !void {
-        _ = self;
-        _ = stmt;
-        return CompilerError.NotImplemented;
-    }
-
-    fn compile_update(self: *Compiler, stmt: ast.UpdateStatement) !void {
-        _ = self;
-        _ = stmt;
-        return CompilerError.NotImplemented;
-    }
-
-    fn compile_drop_table(self: *Compiler, stmt: ast.DropTableStatement) !void {
-        _ = self;
-        _ = stmt;
-        return CompilerError.NotImplemented;
     }
 };
 
