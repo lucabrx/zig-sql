@@ -88,6 +88,14 @@ pub const Cursor = struct {
     pub fn debug(self: *Cursor) void {
         print("[CURSOR] page={}, cell={}, end={}\n", .{ self.page_num, self.cell_num, self.end_of_table });
     }
+
+    pub fn page_number(self: *const Cursor) u32 {
+        return self.page_num;
+    }
+
+    pub fn cell_number(self: *const Cursor) u32 {
+        return self.cell_num;
+    }
 };
 
 test "cursor initialization" {

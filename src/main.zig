@@ -26,4 +26,7 @@ test {
     _ = @import("storage/row.zig");
     _ = @import("storage/cursor.zig");
     _ = @import("storage/btree.zig");
+    _ = @import("storage/table.zig");
+    _ = @import("vm/opcode.zig");
+    _ = @import("vm/vm.zig");
 }
