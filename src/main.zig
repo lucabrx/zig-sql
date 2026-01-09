@@ -21,4 +21,7 @@ test {
     _ = @import("lexer/token.zig");
     _ = @import("parser/ast.zig");
     _ = @import("parser/parser.zig");
+    _ = @import("storage/node.zig");
+    _ = @import("storage/pager.zig");
+    _ = @import("storage/row.zig");
 }
