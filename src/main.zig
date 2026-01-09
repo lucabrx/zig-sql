@@ -29,4 +29,8 @@ test {
     _ = @import("storage/table.zig");
     _ = @import("vm/opcode.zig");
     _ = @import("vm/vm.zig");
+    _ = @import("compiler/compiler.zig");
+    _ = @import("compiler/schema.zig");
+    _ = @import("compiler/insert.zig");
+    _ = @import("compiler/delete.zig");
 }

@@ -4,7 +4,9 @@ const ast = @import("../parser/ast.zig");
 const Expression = ast.Expression;
 const Schema = @import("../storage/schema.zig").Schema;
 
-pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema: ?*const Schema) !void {
+const CompileError = error{OutOfMemory};
+
+pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema: ?*const Schema) CompileError!void {
     _ = schema;
 
     switch (expr) {
@@ -37,7 +39,7 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
     }
 }
 
-fn compile_binary_expression(c: *Compiler, bin_expr: *ast.BinaryExpression, dest_reg: i32) !void {
+fn compile_binary_expression(c: *Compiler, bin_expr: *ast.BinaryExpression, dest_reg: i32) CompileError!void {
     const left_reg = c.alloc_reg();
     const right_reg = c.alloc_reg();
 
@@ -72,7 +74,7 @@ fn compile_binary_expression(c: *Compiler, bin_expr: *ast.BinaryExpression, dest
     }
 }
 
-fn compile_unary_expression(c: *Compiler, unary_expr: *ast.UnaryExpression, dest_reg: i32) !void {
+fn compile_unary_expression(c: *Compiler, unary_expr: *ast.UnaryExpression, dest_reg: i32) CompileError!void {
     const operand_reg = c.alloc_reg();
     try compile_expression(c, unary_expr.right, operand_reg, null);
 

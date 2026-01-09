@@ -40,6 +40,68 @@ fn map_column_type(parser_type: []const u8) Type {
     } else if (std.mem.eql(u8, parser_type, "BLOB")) {
         return .Blob;
     } else {
-        return .Text; // Default to TEXT
+        return .Text;
     }
+}
+
+test "compile create table" {
+    const allocator = std.testing.allocator;
+    const Pager = @import("../storage/pager.zig").Pager;
+    const DB = @import("../storage/table.zig").Database;
+    const Opcode = @import("../vm/opcode.zig").Opcode;
+
+    var pager = try Pager.init(allocator, ":memory:");
+    defer pager.deinit();
+
+    var db = try DB.init(allocator, &pager);
+    defer db.close();
+
+    var compiler = Compiler.init(allocator, &db);
+    defer compiler.deinit();
+
+    const stmt = CreateTableStatement{
+        .table = "users",
+        .columns = &[_]ast.ColumnDef{
+            .{ .name = "id", .type_name = "INTEGER", .primary_key = true, .not_null = true },
+            .{ .name = "name", .type_name = "TEXT", .primary_key = false, .not_null = false },
+        },
+    };
+
+    try compile_create_table(&compiler, stmt);
+
+    if (compiler.instructions.items[0].p5) |ptr| {
+        const schema_ptr: *Schema = @ptrCast(@alignCast(ptr));
+        allocator.free(schema_ptr.columns);
+        allocator.destroy(schema_ptr);
+    }
+
+    try std.testing.expect(compiler.instructions.items.len >= 1);
+    try std.testing.expectEqual(Opcode.create_table, compiler.instructions.items[0].op);
+}
+
+test "compile drop table" {
+    const allocator = std.testing.allocator;
+    const Pager = @import("../storage/pager.zig").Pager;
+    const DB = @import("../storage/table.zig").Database;
+    const Opcode = @import("../vm/opcode.zig").Opcode;
+
+    var pager = try Pager.init(allocator, ":memory:");
+    defer pager.deinit();
+
+    var db = try DB.init(allocator, &pager);
+    defer db.close();
+
+    var compiler = Compiler.init(allocator, &db);
+    defer compiler.deinit();
+
+    const stmt = DropTableStatement{
+        .table = "users",
+        .if_exists = true,
+    };
+
+    try compile_drop_table(&compiler, stmt);
+
+    try std.testing.expect(compiler.instructions.items.len >= 1);
+    try std.testing.expectEqual(Opcode.drop_table, compiler.instructions.items[0].op);
+    try std.testing.expectEqual(1, compiler.instructions.items[0].p1); // if_exists = 1
 }

@@ -58,3 +58,33 @@ pub fn compile_value_expression(c: *Compiler, expr: Expression, dest_reg: i32) !
         },
     }
 }
+
+test "compile value expressions" {
+    const allocator = std.testing.allocator;
+    const Pager = @import("../storage/pager.zig").Pager;
+    const DB = @import("../storage/table.zig").Database;
+    const Opcode = @import("../vm/opcode.zig").Opcode;
+
+    var pager = try Pager.init(allocator, ":memory:");
+    defer pager.deinit();
+
+    var db = try DB.init(allocator, &pager);
+    defer db.close();
+
+    var compiler = Compiler.init(allocator, &db);
+    defer compiler.deinit();
+
+    // Test integer literal
+    try compile_value_expression(&compiler, .{ .integer_literal = .{ .value = 42 } }, 0);
+    try std.testing.expectEqual(Opcode.integer, compiler.instructions.items[0].op);
+    try std.testing.expectEqual(42, compiler.instructions.items[0].p2);
+
+    // Test string literal
+    try compile_value_expression(&compiler, .{ .string_literal = .{ .value = "hello" } }, 1);
+    try std.testing.expectEqual(Opcode.string, compiler.instructions.items[1].op);
+    try std.testing.expectEqualStrings("hello", compiler.instructions.items[1].p4);
+
+    // Test null literal
+    try compile_value_expression(&compiler, .{ .null_literal = .{} }, 2);
+    try std.testing.expectEqual(Opcode.null, compiler.instructions.items[2].op);
+}

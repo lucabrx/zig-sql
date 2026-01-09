@@ -35,3 +35,41 @@ pub fn compile_delete(c: *Compiler, stmt: DeleteStatement) !void {
     _ = try c.emit(.close, 0, 0, 0, "", null);
     c.patch(rewind_addr, @intCast(close_addr));
 }
+
+test "compile delete without where" {
+    const allocator = std.testing.allocator;
+    const Pager = @import("../storage/pager.zig").Pager;
+    const DB = @import("../storage/table.zig").Database;
+    const Opcode = @import("../vm/opcode.zig").Opcode;
+    const schema_mod = @import("../storage/schema.zig");
+
+    var pager = try Pager.init(allocator, ":memory:");
+    defer pager.deinit();
+
+    var db = try DB.init(allocator, &pager);
+    defer db.close();
+
+    const columns = [_]schema_mod.Column{
+        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
+    };
+    const cols_slice: []schema_mod.Column = @constCast(&columns);
+    const schema = schema_mod.Schema.init("test", cols_slice);
+    _ = try db.create_table(&schema);
+
+    var compiler = Compiler.init(allocator, &db);
+    defer compiler.deinit();
+
+    const stmt = DeleteStatement{
+        .table = "test",
+        .where = null,
+    };
+
+    try compile_delete(&compiler, stmt);
+
+    try std.testing.expect(compiler.instructions.items.len >= 5);
+    try std.testing.expectEqual(Opcode.open_write, compiler.instructions.items[0].op);
+    try std.testing.expectEqual(Opcode.rewind, compiler.instructions.items[1].op);
+    try std.testing.expectEqual(Opcode.delete, compiler.instructions.items[2].op);
+    try std.testing.expectEqual(Opcode.next, compiler.instructions.items[3].op);
+    try std.testing.expectEqual(Opcode.close, compiler.instructions.items[4].op);
+}

@@ -20,14 +20,14 @@ pub const Compiler = struct {
     pub fn init(allocator: std.mem.Allocator, db: *DB) Compiler {
         return Compiler{
             .db = db,
-            .instructions = std.ArrayList(Instruction).init(allocator),
+            .instructions = std.ArrayList(Instruction){},
             .next_reg = 0,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Compiler) void {
-        self.instructions.deinit();
+        self.instructions.deinit(self.allocator);
     }
 
     pub fn compile(self: *Compiler, stmt: Statement) ![]Instruction {
@@ -59,7 +59,7 @@ pub const Compiler = struct {
             .p4 = p4,
             .p5 = p5,
         };
-        try self.instructions.append(inst);
+        try self.instructions.append(self.allocator, inst);
         return self.instructions.items.len - 1;
     }
 
