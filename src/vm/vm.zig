@@ -23,6 +23,7 @@ const storage = struct {
     const Schema = @import("../storage/schema.zig").Schema;
     const Row = @import("../storage/row.zig").Row;
     const row = @import("../storage/row.zig");
+    const node = @import("../storage/node.zig");
 };
 
 const print = std.debug.print;
@@ -219,6 +220,9 @@ pub const VM = struct {
             .eq, .ne, .lt, .le, .gt, .ge => {
                 try self.op_compare(inst);
             },
+            .delete => {
+                try self.op_delete(inst);
+            },
             else => {
                 return VmErrors.InvalidOp;
             },
@@ -264,16 +268,31 @@ pub const VM = struct {
         _ = table;
 
         const page = try self.db.pager.get_page(cursor.page_number());
-        const row = storage.row.get_leaf_row(page, cursor.cell_number());
+
+        const cell_offset = storage.row.leaf_cell_offset(cursor.cell_number());
+        const key_size = storage.row.LEAF_KEY_SIZE;
+        const row_data = page.data[cell_offset + key_size ..];
 
         const col_idx: usize = @intCast(inst.p2);
         const dest_reg: usize = @intCast(inst.p3);
 
-        // For now, map fixed row fields to columns
         switch (col_idx) {
-            0 => self.registers[dest_reg] = RegisterValue.init_integer(@intCast(row.id)),
-            1 => self.registers[dest_reg] = RegisterValue.init_text(std.mem.sliceTo(&row.username, 0)),
-            2 => self.registers[dest_reg] = RegisterValue.init_text(std.mem.sliceTo(&row.email, 0)),
+            0 => {
+                const id = std.mem.readInt(u32, row_data[0..4], .little);
+                self.registers[dest_reg] = RegisterValue.init_integer(@intCast(id));
+            },
+            1 => {
+                const username_start = storage.row.COL_ID_SIZE;
+                const username_data = row_data[username_start .. username_start + storage.row.COL_USERNAME_SIZE];
+                const username = std.mem.sliceTo(username_data, 0);
+                self.registers[dest_reg] = RegisterValue.init_text(username);
+            },
+            2 => {
+                const email_start = storage.row.COL_ID_SIZE + storage.row.COL_USERNAME_SIZE;
+                const email_data = row_data[email_start .. email_start + storage.row.COL_EMAIL_SIZE];
+                const email = std.mem.sliceTo(email_data, 0);
+                self.registers[dest_reg] = RegisterValue.init_text(email);
+            },
             else => self.registers[dest_reg] = RegisterValue.init_null(),
         }
 
@@ -318,6 +337,10 @@ pub const VM = struct {
             email = self.registers[start_reg + 2].text;
         }
 
+        if (self.debug) {
+            print("[VM] op_insert: key={}, username='{s}', email='{s}', num_cols={}\n", .{ key, username, email, inst.p3 });
+        }
+
         const row = storage.Row.init(key, username, email);
         try table.insert(key, row);
 
@@ -339,6 +362,33 @@ pub const VM = struct {
                 return err;
             }
         };
+        self.pc += 1;
+    }
+
+    fn op_delete(self: *VM, inst: Instruction) !void {
+        const cursor = self.cursors.getPtr(inst.p1) orelse return VmErrors.NoCursor;
+
+        const page = try self.db.pager.get_page(cursor.page_number());
+        const num_cells = storage.node.get_num_cells(page);
+        const cell_to_delete = cursor.cell_number();
+
+        if (self.debug) {
+            print("[VM] op_delete: deleting cell {} from page {} (total cells: {})\n", .{ cell_to_delete, cursor.page_number(), num_cells });
+        }
+
+        if (cell_to_delete < num_cells - 1) {
+            var i: u32 = cell_to_delete;
+            while (i < num_cells - 1) : (i += 1) {
+                const next_key = storage.row.get_leaf_key(page, i + 1);
+                const next_row = storage.row.get_leaf_row(page, i + 1);
+                storage.row.set_leaf_key(page, i, next_key);
+                storage.row.set_leaf_row(page, i, next_row);
+            }
+        }
+
+        storage.node.set_num_cells(page, num_cells - 1);
+        self.db.pager.mark_dirty(cursor.page_number());
+
         self.pc += 1;
     }
 

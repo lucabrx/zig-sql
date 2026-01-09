@@ -4,11 +4,11 @@ const ast = @import("../parser/ast.zig");
 const UpdateStatement = ast.UpdateStatement;
 const CompilerError = @import("errors.zig").CompilerError;
 const expression = @import("expression.zig");
+const insert = @import("insert.zig");
 
 pub fn compile_update(c: *Compiler, stmt: UpdateStatement) !void {
     const table = c.db.get_table(stmt.table) catch return CompilerError.TableNotFound;
     const schema = table.schema;
-    _ = schema;
 
     _ = try c.emit(.open_write, 0, 0, 0, stmt.table, null);
 
@@ -19,16 +19,29 @@ pub fn compile_update(c: *Compiler, stmt: UpdateStatement) !void {
     var skip_addr: ?usize = null;
     if (stmt.where) |where_expr| {
         const cond_reg = c.alloc_reg();
-        try expression.compile_expression(c, where_expr, cond_reg, null);
+        try expression.compile_expression(c, where_expr, cond_reg, schema);
         skip_addr = try c.emit(.if_zero, cond_reg, 0, 0, "", null);
     }
 
-    // TODO: Compile SET assignments
-    // For each assignment in stmt.set:
-    //   - Get column index
-    //   - Compile value expression
-    //   - Emit update instruction
-    std.debug.print("[COMPILER] UPDATE not fully implemented yet\n", .{});
+    const start_reg = c.next_reg;
+    for (0..schema.columns.len) |i| {
+        const reg = c.alloc_reg();
+        _ = try c.emit(.column, 0, @intCast(i), reg, "", null);
+    }
+
+    for (stmt.set) |assignment| {
+        for (schema.columns, 0..) |col, col_idx| {
+            if (std.mem.eql(u8, col.name, assignment.column)) {
+                const reg: i32 = start_reg + @as(i32, @intCast(col_idx));
+                try insert.compile_value_expression(c, assignment.value, reg);
+                break;
+            }
+        }
+    }
+
+    _ = try c.emit(.delete, 0, 0, 0, "", null);
+
+    _ = try c.emit(.insert, 0, start_reg, @intCast(schema.columns.len), "", null);
 
     _ = try c.emit(.next, 0, @intCast(loop_start), 0, "", null);
 

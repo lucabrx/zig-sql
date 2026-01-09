@@ -2,8 +2,12 @@ const std = @import("std");
 const repl = @import("repl.zig");
 
 pub fn main() !void {
-    var stdout_buffer: [4096]u8 = undefined; // 4kb
-    var stdin_buffer: [1024]u8 = undefined; // 1kb
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdin_buffer: [1024]u8 = undefined;
 
     var stdout = std.fs.File.stdout().writer(&stdout_buffer);
     var stdin = std.fs.File.stdin().reader(&stdin_buffer);
@@ -11,7 +15,7 @@ pub fn main() !void {
     const writer = &stdout.interface;
     const reader = &stdin.interface;
 
-    var r = repl.REPL.init(":memory:", writer, reader);
+    var r = repl.REPL.init(allocator, ":memory:", writer, reader);
     try r.run();
 }
 

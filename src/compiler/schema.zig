@@ -11,16 +11,19 @@ const Type = @import("../storage/schema.zig").Type;
 pub fn compile_create_table(c: *Compiler, stmt: CreateTableStatement) !void {
     var columns = try c.allocator.alloc(Column, stmt.columns.len);
     for (stmt.columns, 0..) |col_def, i| {
+        const owned_name = try c.allocator.dupe(u8, col_def.name);
         columns[i] = Column{
-            .name = col_def.name,
+            .name = owned_name,
             .type = map_column_type(col_def.type_name),
             .primary_key = col_def.primary_key,
             .not_null = col_def.not_null,
         };
     }
 
+    const owned_table_name = try c.allocator.dupe(u8, stmt.table);
+
     const schema_ptr = try c.allocator.create(Schema);
-    schema_ptr.* = Schema.init(stmt.table, columns);
+    schema_ptr.* = Schema.init(owned_table_name, columns);
 
     _ = try c.emit(.create_table, 0, 0, 0, "", @ptrCast(schema_ptr));
 }

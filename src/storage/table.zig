@@ -116,7 +116,11 @@ pub const Database = struct {
     }
 
     pub fn create_table(self: *Database, s: *const Schema) !*Table {
-        if (self.tables.contains(s.table_name)) {
+        const owned_name = try self.allocator.dupe(u8, s.table_name);
+        errdefer self.allocator.free(owned_name);
+
+        if (self.tables.contains(owned_name)) {
+            self.allocator.free(owned_name);
             return StorageError.TableAlreadyExists;
         }
 
@@ -127,11 +131,11 @@ pub const Database = struct {
         table_ptr.* = Table.init(self.pager, s, root_page);
         try table_ptr.initialize();
 
-        try self.tables.put(s.table_name, table_ptr);
+        try self.tables.put(owned_name, table_ptr);
 
         try self.save_metadata();
 
-        print("[DB] Created table '{s}' at page {}\n", .{ s.table_name, root_page });
+        print("[DB] Created table '{s}' at page {}\n", .{ owned_name, root_page });
         return table_ptr;
     }
 
@@ -140,19 +144,19 @@ pub const Database = struct {
     }
 
     pub fn drop_table(self: *Database, name: []const u8) !void {
-        const table_ptr = self.tables.get(name) orelse return StorageError.TableNotFound;
-        self.allocator.destroy(table_ptr);
-        _ = self.tables.remove(name);
+        const kv = self.tables.fetchRemove(name) orelse return StorageError.TableNotFound;
+        self.allocator.destroy(kv.value);
+        self.allocator.free(kv.key);
         print("[DB] Dropped table '{s}'\n", .{name});
     }
 
     pub fn list_tables(self: *Database) ![][]const u8 {
-        var names = std.ArrayList([]const u8).init(self.allocator);
+        var names = std.ArrayList([]const u8){};
         var iter = self.tables.keyIterator();
         while (iter.next()) |key| {
-            try names.append(key.*);
+            try names.append(self.allocator, key.*);
         }
-        return try names.toOwnedSlice();
+        return try names.toOwnedSlice(self.allocator);
     }
 
     fn save_metadata(self: *Database) !void {
@@ -167,9 +171,10 @@ pub const Database = struct {
     pub fn close(self: *Database) void {
         self.save_metadata() catch {};
 
-        var iter = self.tables.valueIterator();
-        while (iter.next()) |table_ptr| {
-            self.allocator.destroy(table_ptr.*);
+        var iter = self.tables.iterator();
+        while (iter.next()) |entry| {
+            self.allocator.destroy(entry.value_ptr.*);
+            self.allocator.free(entry.key_ptr.*);
         }
         self.tables.deinit();
     }

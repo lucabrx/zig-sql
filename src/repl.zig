@@ -3,6 +3,11 @@ const lexer = @import("lexer/lexer.zig");
 const token = @import("lexer/token.zig");
 const parser = @import("parser/parser.zig");
 const ast = @import("parser/ast.zig");
+const Compiler = @import("compiler/compiler.zig").Compiler;
+const VM = @import("vm/vm.zig").VM;
+const RegisterValue = @import("vm/vm.zig").RegisterValue;
+const Pager = @import("storage/pager.zig").Pager;
+const Database = @import("storage/table.zig").Database;
 
 pub const MetaCommandResult = enum {
     Success,
@@ -14,22 +19,64 @@ pub const REPL = struct {
     db_path: []const u8,
     writer: *std.Io.Writer,
     reader: *std.Io.Reader,
+    allocator: std.mem.Allocator,
+    pager: ?*Pager,
+    db: ?*Database,
+    debug_mode: bool,
 
-    pub fn init(db_path: []const u8, writer: *std.Io.Writer, reader: *std.Io.Reader) REPL {
+    pub fn init(allocator: std.mem.Allocator, db_path: []const u8, writer: *std.Io.Writer, reader: *std.Io.Reader) REPL {
         return REPL{
             .db_path = db_path,
             .writer = writer,
             .reader = reader,
+            .allocator = allocator,
+            .pager = null,
+            .db = null,
+            .debug_mode = false,
         };
     }
 
+    pub fn start(self: *REPL) !void {
+        // Initialize storage
+        const pager = try self.allocator.create(Pager);
+        pager.* = try Pager.init(self.allocator, self.db_path);
+        self.pager = pager;
+
+        const db = try self.allocator.create(Database);
+        db.* = try Database.init(self.allocator, pager);
+        self.db = db;
+
+        try self.writer.print("ZQL Database v0.1\n", .{});
+        try self.writer.print("Connected to: {s}\n", .{self.db_path});
+        try self.writer.print("Type .help for commands\n\n", .{});
+        try self.writer.flush();
+    }
+
+    pub fn shutdown(self: *REPL) void {
+        if (self.db) |db| {
+            db.close();
+            self.allocator.destroy(db);
+            self.db = null;
+        }
+        if (self.pager) |pager| {
+            pager.deinit();
+            self.allocator.destroy(pager);
+            self.pager = null;
+        }
+    }
+
     pub fn run(self: *REPL) !void {
+        try self.start();
+        defer self.shutdown();
+
         while (true) {
-            _ = try self.writer.write(">zql ");
+            _ = try self.writer.write("zql> ");
             try self.writer.flush();
 
             const line = try self.reader.takeDelimiter('\n') orelse break;
             const trimmed = std.mem.trimRight(u8, line, "\r");
+
+            if (trimmed.len == 0) continue;
 
             if (std.mem.startsWith(u8, trimmed, ".")) {
                 const result = try self.execute_meta_command(trimmed);
@@ -38,7 +85,10 @@ pub const REPL = struct {
                     break;
                 }
             } else {
-                try self.execute_statement(trimmed);
+                self.execute_statement(trimmed) catch |err| {
+                    try self.writer.print("Error: {s}\n", .{@errorName(err)});
+                };
+                try self.writer.flush();
             }
         }
     }
@@ -46,9 +96,10 @@ pub const REPL = struct {
     fn print_help(self: *REPL) !void {
         _ = try self.writer.writeAll(
             \\Meta commands:
-            \\ .exit - Exit this program
-            \\ .help Show this help message
-            \\ .tables List all tables
+            \\ .exit    - Exit this program
+            \\ .help    - Show this help message
+            \\ .tables  - List all tables
+            \\ .debug   - Toggle debug mode
             \\
         );
     }
@@ -58,10 +109,11 @@ pub const REPL = struct {
             exit,
             help,
             tables,
+            debug,
         };
 
         const command = std.meta.stringToEnum(MetaCmd, cmd[1..]) orelse {
-            try self.writer.writeAll("Unrecognized command\n");
+            try self.writer.writeAll("Unrecognized command. Type .help for available commands.\n");
             return .Unrecognized;
         };
 
@@ -75,34 +127,53 @@ pub const REPL = struct {
                 return .Success;
             },
             .tables => {
-                try self.writer.writeAll("Tables:\n");
+                try self.list_tables();
+                return .Success;
+            },
+            .debug => {
+                self.debug_mode = !self.debug_mode;
+                try self.writer.print("Debug mode: {s}\n", .{if (self.debug_mode) "ON" else "OFF"});
                 return .Success;
             },
         }
     }
 
+    fn list_tables(self: *REPL) !void {
+        const db = self.db orelse return;
+        const tables = try db.list_tables();
+        defer self.allocator.free(tables);
+
+        if (tables.len == 0) {
+            try self.writer.writeAll("No tables found.\n");
+            return;
+        }
+
+        try self.writer.writeAll("Tables:\n");
+        for (tables) |name| {
+            try self.writer.print("  {s}\n", .{name});
+        }
+    }
+
     fn execute_statement(self: *REPL, input: []const u8) !void {
+        const db = self.db orelse return error.DatabaseNotInitialized;
+
+        // Tokenize
         var l = lexer.Lexer.init(input);
-        const allocator = std.heap.page_allocator;
+        const tokens = try l.tokenize(self.allocator);
+        defer self.allocator.free(tokens);
 
-        const tokens = try l.tokenize(allocator);
-        defer allocator.free(tokens);
+        if (tokens.len == 0) return;
 
-        _ = try self.writer.write("[DEBUG] Tokens: \n");
-        for (tokens) |t| {
-            if (t.type == token.TokenType.eof) {
-                break;
-            }
-            var buf: [128]u8 = undefined;
-            const msg = try std.fmt.bufPrint(&buf, "TYPE: {} - Literal: {s}\n", .{ t.type, t.literal });
-            _ = try self.writer.write(msg);
-
-            if (tokens.len == 0) {
-                return;
+        if (self.debug_mode) {
+            try self.writer.writeAll("[DEBUG] Tokens:\n");
+            for (tokens) |t| {
+                if (t.type == token.TokenType.eof) break;
+                try self.writer.print("  {s}: '{s}'\n", .{ @tagName(t.type), t.literal });
             }
         }
 
-        var p = parser.Parser.init(tokens, allocator);
+        // Parse
+        var p = parser.Parser.init(tokens, self.allocator);
         const stmt = p.parse() catch |err| {
             try self.writer.print("Parse error: {s}\n", .{@errorName(err)});
             if (p.hasErrors()) {
@@ -111,8 +182,68 @@ pub const REPL = struct {
             return;
         };
 
-        try self.print_ast(stmt);
-        try self.writer.flush();
+        if (self.debug_mode) {
+            try self.writer.writeAll("[DEBUG] AST:\n");
+            try self.print_ast(stmt);
+        }
+
+        var compiler = Compiler.init(self.allocator, db);
+        defer compiler.deinit();
+
+        const instructions = compiler.compile(stmt) catch |err| {
+            try self.writer.print("Compile error: {s}\n", .{@errorName(err)});
+            return;
+        };
+
+        if (self.debug_mode) {
+            try self.writer.writeAll("[DEBUG] Bytecode:\n");
+            for (instructions, 0..) |inst, i| {
+                try self.writer.print("  {d:3}: {s} p1={d} p2={d} p3={d}", .{
+                    i,
+                    inst.op.to_string(),
+                    inst.p1,
+                    inst.p2,
+                    inst.p3,
+                });
+                if (inst.p4.len > 0) {
+                    try self.writer.print(" p4=\"{s}\"", .{inst.p4});
+                }
+                try self.writer.writeAll("\n");
+            }
+        }
+
+        var vm = VM.init(self.allocator, db);
+        vm.set_debug(self.debug_mode);
+        defer vm.deinit();
+
+        vm.load(instructions);
+        vm.run() catch |err| {
+            try self.writer.print("Runtime error: {s}\n", .{@errorName(err)});
+            return;
+        };
+
+        const results = vm.get_results();
+        if (results.len > 0) {
+            try self.print_results(results);
+        } else {
+            try self.writer.writeAll("OK\n");
+        }
+    }
+
+    fn print_results(self: *REPL, results: [][]RegisterValue) !void {
+        for (results) |row| {
+            for (row, 0..) |val, i| {
+                if (i > 0) try self.writer.writeAll(" | ");
+                switch (val.type) {
+                    .integer => try self.writer.print("{d}", .{val.integer}),
+                    .real => try self.writer.print("{d:.2}", .{val.real}),
+                    .text => try self.writer.print("{s}", .{val.text}),
+                    .null => try self.writer.writeAll("NULL"),
+                }
+            }
+            try self.writer.writeAll("\n");
+        }
+        try self.writer.print("({d} rows)\n", .{results.len});
     }
 
     fn print_ast(self: *REPL, stmt: ast.Statement) !void {

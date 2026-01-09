@@ -34,7 +34,7 @@ pub const Compiler = struct {
         self.instructions.clearRetainingCapacity();
         self.next_reg = 0;
 
-        try self.emit(.init, 0, 0, 0, "", null);
+        _ = try self.emit(.init, 0, 0, 0, "", null);
 
         switch (stmt) {
             .select_stmt => |s| try select.compile_select(self, s),
@@ -45,7 +45,7 @@ pub const Compiler = struct {
             .drop_table_stmt => |s| try schema.compile_drop_table(self, s),
         }
 
-        try self.emit(.halt, 0, 0, 0, "", null);
+        _ = try self.emit(.halt, 0, 0, 0, "", null);
 
         return self.instructions.items;
     }

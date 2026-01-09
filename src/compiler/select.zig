@@ -49,26 +49,26 @@ pub fn compile_select(c: *Compiler, stmt: SelectStatement) !void {
 }
 
 fn resolve_select_columns(c: *Compiler, cols: []const Expression, schema: *const Schema) ![]i32 {
-    var indices = std.ArrayList(i32).init(c.allocator);
+    var indices = std.ArrayList(i32){};
 
     for (cols) |col| {
         switch (col) {
             .star_expression => {
                 for (0..schema.columns.len) |i| {
-                    try indices.append(@intCast(i));
+                    try indices.append(c.allocator, @intCast(i));
                 }
             },
             .identifier => |ident| {
                 const idx = get_column_index(schema, ident.name);
                 if (idx >= 0) {
-                    try indices.append(idx);
+                    try indices.append(c.allocator, idx);
                 }
             },
             else => {},
         }
     }
 
-    return try indices.toOwnedSlice();
+    return try indices.toOwnedSlice(c.allocator);
 }
 
 fn get_column_index(schema: *const Schema, name: []const u8) i32 {
