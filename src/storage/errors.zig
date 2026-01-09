@@ -1,0 +1,11 @@
+pub const StorageError = error{
+    DuplicateKey,
+    KeyNotFound,
+    TableFull,
+    TableNotFound,
+    TableAlreadyExists,
+    PageOutOfBounds,
+    PageNotFound,
+    IncompleteRead,
+    OutOfMemory,
+};

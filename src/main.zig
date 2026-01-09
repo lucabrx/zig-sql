@@ -24,4 +24,6 @@ test {
     _ = @import("storage/node.zig");
     _ = @import("storage/pager.zig");
     _ = @import("storage/row.zig");
+    _ = @import("storage/cursor.zig");
+    _ = @import("storage/btree.zig");
 }
