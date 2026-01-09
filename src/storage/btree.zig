@@ -19,11 +19,6 @@ pub const Btree = struct {
         };
     }
 
-    pub fn deinit(self: *Btree) void {
-        _ = self;
-        // Pager handles cleanup
-    }
-
     pub fn initialize(self: *Btree) !void {
         const page = try self.pager.get_page(self.root_page);
         node.initialize_leaf_node(page);
@@ -48,7 +43,7 @@ pub const Btree = struct {
         const num_cells = node.get_num_cells(page);
 
         var cursor = Cursor{
-            .pager = self.pager,
+            .btree = self,
             .page_num = page_num,
             .cell_num = 0,
             .end_of_table = false,
@@ -321,7 +316,7 @@ test "btree insert and search" {
     var cursor = try btree.search(1);
     try std.testing.expectEqual(0, cursor.cell_num);
 
-    const retrieved = try cursor.get_value();
+    const retrieved = try cursor.value();
     try std.testing.expectEqual(1, retrieved.id);
 }
 
@@ -345,9 +340,9 @@ test "btree insert multiple keys" {
     var c2 = try btree.search(2);
     var c3 = try btree.search(3);
 
-    try std.testing.expectEqual(1, (try c1.get_value()).id);
-    try std.testing.expectEqual(2, (try c2.get_value()).id);
-    try std.testing.expectEqual(3, (try c3.get_value()).id);
+    try std.testing.expectEqual(1, (try c1.value()).id);
+    try std.testing.expectEqual(2, (try c2.value()).id);
+    try std.testing.expectEqual(3, (try c3.value()).id);
 }
 
 test "btree duplicate key error" {

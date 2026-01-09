@@ -8,4 +8,9 @@ pub const StorageError = error{
     PageNotFound,
     IncompleteRead,
     OutOfMemory,
+    ColumnNotFound,
+    TypeMismatch,
+    NullValueNotAllowed,
+    TableNoPrimaryKey,
+    InvalidDatabaseFile,
 };
