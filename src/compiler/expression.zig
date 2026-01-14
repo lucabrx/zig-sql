@@ -62,6 +62,9 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
         .case_expr => |case| {
             try compile_case(c, case, dest_reg, schema);
         },
+        .function_call => |func| {
+            try compile_function_call(c, func, dest_reg, schema);
+        },
     }
 }
 
@@ -72,6 +75,10 @@ fn compile_subquery(c: *Compiler, subq: *ast.SubqueryExpression, dest_reg: i32) 
 }
 
 fn compile_binary_expression(c: *Compiler, bin_expr: *ast.BinaryExpression, dest_reg: i32, schema: ?*const Schema) CompileError!void {
+    if (try fold_binary_constant(c, bin_expr, dest_reg)) {
+        return;
+    }
+
     const left_reg = c.alloc_reg();
     const right_reg = c.alloc_reg();
 
@@ -106,7 +113,75 @@ fn compile_binary_expression(c: *Compiler, bin_expr: *ast.BinaryExpression, dest
     }
 }
 
+fn fold_binary_constant(c: *Compiler, bin_expr: *ast.BinaryExpression, dest_reg: i32) CompileError!bool {
+    const left_val = get_constant_int(bin_expr.left) orelse return false;
+    const right_val = get_constant_int(bin_expr.right) orelse return false;
+
+    const op = bin_expr.operator;
+    if (std.mem.eql(u8, op, "+")) {
+        _ = try c.emit(.integer, dest_reg, @intCast(left_val + right_val), 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, "-")) {
+        _ = try c.emit(.integer, dest_reg, @intCast(left_val - right_val), 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, "*")) {
+        _ = try c.emit(.integer, dest_reg, @intCast(left_val * right_val), 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, "/")) {
+        if (right_val != 0) {
+            _ = try c.emit(.integer, dest_reg, @intCast(@divTrunc(left_val, right_val)), 0, "", null);
+            return true;
+        }
+    } else if (std.mem.eql(u8, op, "=") or std.mem.eql(u8, op, "==")) {
+        _ = try c.emit(.integer, dest_reg, if (left_val == right_val) 1 else 0, 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, "!=") or std.mem.eql(u8, op, "<>")) {
+        _ = try c.emit(.integer, dest_reg, if (left_val != right_val) 1 else 0, 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, "<")) {
+        _ = try c.emit(.integer, dest_reg, if (left_val < right_val) 1 else 0, 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, "<=")) {
+        _ = try c.emit(.integer, dest_reg, if (left_val <= right_val) 1 else 0, 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, ">")) {
+        _ = try c.emit(.integer, dest_reg, if (left_val > right_val) 1 else 0, 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, ">=")) {
+        _ = try c.emit(.integer, dest_reg, if (left_val >= right_val) 1 else 0, 0, "", null);
+        return true;
+    }
+    return false;
+}
+
+fn get_constant_int(expr: Expression) ?i64 {
+    switch (expr) {
+        .integer_literal => |lit| return lit.value,
+        .boolean_literal => |lit| return if (lit.value) 1 else 0,
+        .binary_expression => |bin| {
+            const left = get_constant_int(bin.left) orelse return null;
+            const right = get_constant_int(bin.right) orelse return null;
+            const op = bin.operator;
+            if (std.mem.eql(u8, op, "+")) return left + right;
+            if (std.mem.eql(u8, op, "-")) return left - right;
+            if (std.mem.eql(u8, op, "*")) return left * right;
+            if (std.mem.eql(u8, op, "/") and right != 0) return @divTrunc(left, right);
+            return null;
+        },
+        .unary_expression => |un| {
+            const val = get_constant_int(un.right) orelse return null;
+            if (std.mem.eql(u8, un.operator, "-")) return -val;
+            return null;
+        },
+        else => return null,
+    }
+}
+
 fn compile_unary_expression(c: *Compiler, unary_expr: *ast.UnaryExpression, dest_reg: i32, schema: ?*const Schema) CompileError!void {
+    if (try fold_unary_constant(c, unary_expr, dest_reg)) {
+        return;
+    }
+
     const operand_reg = c.alloc_reg();
     try compile_expression(c, unary_expr.right, operand_reg, schema);
 
@@ -117,6 +192,19 @@ fn compile_unary_expression(c: *Compiler, unary_expr: *ast.UnaryExpression, dest
         _ = try c.emit(.integer, dest_reg, 0, 0, "", null);
         _ = try c.emit(.sub, dest_reg, operand_reg, dest_reg, "", null);
     }
+}
+
+fn fold_unary_constant(c: *Compiler, unary_expr: *ast.UnaryExpression, dest_reg: i32) CompileError!bool {
+    const val = get_constant_int(unary_expr.right) orelse return false;
+    const op = unary_expr.operator;
+    if (std.mem.eql(u8, op, "-")) {
+        _ = try c.emit(.integer, dest_reg, @intCast(-val), 0, "", null);
+        return true;
+    } else if (std.mem.eql(u8, op, "NOT")) {
+        _ = try c.emit(.integer, dest_reg, if (val == 0) 1 else 0, 0, "", null);
+        return true;
+    }
+    return false;
 }
 
 fn compile_between(c: *Compiler, bet: *ast.BetweenExpression, dest_reg: i32, schema: ?*const Schema) CompileError!void {
@@ -226,4 +314,17 @@ fn compile_case(c: *Compiler, case: *ast.CaseExpression, dest_reg: i32, schema: 
     for (end_jumps.items) |jump_addr| {
         c.instructions.items[jump_addr].p2 = end_addr;
     }
+}
+
+fn compile_function_call(c: *Compiler, func: *ast.FunctionCall, dest_reg: i32, schema: ?*const Schema) CompileError!void {
+    const arg_start = c.next_reg;
+    for (func.args) |arg| {
+        const reg = c.alloc_reg();
+        try compile_expression(c, arg, reg, schema);
+    }
+
+    const func_ptr = c.allocator.create(ast.FunctionCall) catch return CompileError.OutOfMemory;
+    func_ptr.* = func.*;
+
+    _ = try c.emit(.func_call, dest_reg, arg_start, @intCast(func.args.len), func.name, @ptrCast(func_ptr));
 }

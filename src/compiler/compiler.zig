@@ -73,7 +73,43 @@ pub const Compiler = struct {
 
         _ = try self.emit(.halt, 0, 0, 0, "", null);
 
+        self.optimize();
+
         return self.instructions.items;
+    }
+
+    fn optimize(self: *Compiler) void {
+        self.eliminate_redundant_jumps();
+    }
+
+    fn eliminate_redundant_jumps(self: *Compiler) void {
+        var i: usize = 0;
+        while (i < self.instructions.items.len) {
+            const inst = self.instructions.items[i];
+            if (inst.op == .goto) {
+                const target: usize = @intCast(inst.p2);
+                if (target == i + 1) {
+                    _ = self.instructions.orderedRemove(i);
+                    self.adjust_jumps_after_removal(i);
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    fn adjust_jumps_after_removal(self: *Compiler, removed_idx: usize) void {
+        for (self.instructions.items) |*inst| {
+            switch (inst.op) {
+                .goto, .if_zero, .rewind, .next, .index_scan, .index_next => {
+                    const target: usize = @intCast(inst.p2);
+                    if (target > removed_idx) {
+                        inst.p2 -= 1;
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     pub fn emit(self: *Compiler, op: Opcode, p1: i32, p2: i32, p3: i32, p4: []const u8, p5: ?*anyopaque) !usize {

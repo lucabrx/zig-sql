@@ -297,6 +297,7 @@ pub const VM = struct {
             .alter_drop_column => try self.op_alter_drop_column(inst),
             .alter_rename_table => try self.op_alter_rename_table(inst),
             .alter_rename_column => try self.op_alter_rename_column(inst),
+            .func_call => try self.op_func_call(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -1377,6 +1378,100 @@ pub const VM = struct {
             },
             else => return 0,
         }
+    }
+
+    fn op_func_call(self: *VM, inst: Instruction) !void {
+        const dest_reg: usize = @intCast(inst.p1);
+        const arg_start: usize = @intCast(inst.p2);
+        const arg_count: usize = @intCast(inst.p3);
+        const func_name = inst.p4;
+
+        var upper_buf: [32]u8 = undefined;
+        const len = @min(func_name.len, upper_buf.len);
+        const upper_name = std.ascii.upperString(upper_buf[0..len], func_name[0..len]);
+
+        if (std.mem.eql(u8, upper_name, "UPPER")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                if (arg.type == .text) {
+                    const result = try self.allocator.alloc(u8, arg.text.len);
+                    _ = std.ascii.upperString(result, arg.text);
+                    self.registers[dest_reg] = RegisterValue.init_text(result);
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "LOWER")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                if (arg.type == .text) {
+                    const result = try self.allocator.alloc(u8, arg.text.len);
+                    _ = std.ascii.lowerString(result, arg.text);
+                    self.registers[dest_reg] = RegisterValue.init_text(result);
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "LENGTH")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                if (arg.type == .text) {
+                    self.registers[dest_reg] = RegisterValue.init_integer(@intCast(arg.text.len));
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "SUBSTR")) {
+            if (arg_count >= 2) {
+                const str_arg = self.registers[arg_start];
+                const start_arg = self.registers[arg_start + 1];
+                if (str_arg.type == .text and start_arg.type == .integer) {
+                    const start: usize = if (start_arg.integer > 0) @intCast(start_arg.integer - 1) else 0;
+                    const text = str_arg.text;
+                    if (start < text.len) {
+                        const len_val: usize = if (arg_count >= 3 and self.registers[arg_start + 2].type == .integer)
+                            @intCast(@max(0, self.registers[arg_start + 2].integer))
+                        else
+                            text.len - start;
+                        const end = @min(start + len_val, text.len);
+                        self.registers[dest_reg] = RegisterValue.init_text(text[start..end]);
+                    } else {
+                        self.registers[dest_reg] = RegisterValue.init_text("");
+                    }
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "CONCAT")) {
+            var total_len: usize = 0;
+            for (0..arg_count) |i| {
+                const arg = self.registers[arg_start + i];
+                if (arg.type == .text) total_len += arg.text.len;
+            }
+            const result = try self.allocator.alloc(u8, total_len);
+            var pos: usize = 0;
+            for (0..arg_count) |i| {
+                const arg = self.registers[arg_start + i];
+                if (arg.type == .text) {
+                    @memcpy(result[pos .. pos + arg.text.len], arg.text);
+                    pos += arg.text.len;
+                }
+            }
+            self.registers[dest_reg] = RegisterValue.init_text(result);
+        } else if (std.mem.eql(u8, upper_name, "TRIM")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                if (arg.type == .text) {
+                    const trimmed = std.mem.trim(u8, arg.text, " \t\n\r");
+                    self.registers[dest_reg] = RegisterValue.init_text(trimmed);
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else {
+            self.registers[dest_reg] = RegisterValue.init_null();
+        }
+        self.pc += 1;
     }
 };
 

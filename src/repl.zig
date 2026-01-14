@@ -507,6 +507,7 @@ pub const REPL = struct {
             .like => try self.writer.writeAll("LIKE ..."),
             .is_null => try self.writer.writeAll("IS NULL"),
             .case_expr => try self.writer.writeAll("CASE ... END"),
+            .function_call => |func| try self.writer.print("{s}(...)", .{func.name}),
         }
     }
 };

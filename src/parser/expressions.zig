@@ -437,6 +437,9 @@ pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
         token.TokenType.case => {
             return try parse_case(self);
         },
+        token.TokenType.upper, token.TokenType.lower, token.TokenType.length, token.TokenType.substr, token.TokenType.concat, token.TokenType.trim => {
+            return try parse_function_call(self);
+        },
         else => {
             self.addError("Unexpected token in expression: '{s}'", .{@tagName(self.current.type)});
             return error.UnexpectedToken;
@@ -528,6 +531,39 @@ fn parse_case(self: *Parser) ParseError!ast.Expression {
         .else_result = else_result,
     };
     return ast.Expression{ .case_expr = case_expr };
+}
+
+fn parse_function_call(self: *Parser) ParseError!ast.Expression {
+    const name = self.current.literal;
+    self.advance();
+
+    if (!self.expect(token.TokenType.lparen)) {
+        return error.ExpectedOpenParen;
+    }
+
+    var args = std.ArrayList(ast.Expression){};
+    defer args.deinit(self.allocator);
+
+    while (self.current.type != token.TokenType.rparen and self.current.type != token.TokenType.eof) {
+        const arg = try parse_or_expression(self);
+        try args.append(self.allocator, arg);
+        if (self.current.type == token.TokenType.comma) {
+            self.advance();
+        } else {
+            break;
+        }
+    }
+
+    if (!self.expect(token.TokenType.rparen)) {
+        return error.ExpectedCloseParen;
+    }
+
+    const func = self.allocator.create(ast.FunctionCall) catch return error.OutOfMemory;
+    func.* = ast.FunctionCall{
+        .name = name,
+        .args = args.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
+    };
+    return ast.Expression{ .function_call = func };
 }
 
 const lexer = @import("../lexer/lexer.zig");

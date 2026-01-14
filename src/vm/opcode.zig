@@ -93,6 +93,7 @@ pub const Opcode = enum(u8) {
     alter_drop_column,
     alter_rename_table,
     alter_rename_column,
+    func_call,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -163,6 +164,7 @@ pub const Opcode = enum(u8) {
             .alter_drop_column => "ALTER_DROP_COLUMN",
             .alter_rename_table => "ALTER_RENAME_TABLE",
             .alter_rename_column => "ALTER_RENAME_COLUMN",
+            .func_call => "FUNC_CALL",
         };
     }
 };

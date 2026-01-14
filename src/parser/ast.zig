@@ -18,6 +18,12 @@ pub const Expression = union(enum) {
     like: *LikeExpression,
     is_null: *IsNullExpression,
     case_expr: *CaseExpression,
+    function_call: *FunctionCall,
+};
+
+pub const FunctionCall = struct {
+    name: []const u8,
+    args: []const Expression,
 };
 
 pub const WhenClause = struct {
