@@ -97,6 +97,18 @@ fn parse_column_def(self: *Parser) ParseError!ast.ColumnDef {
             col.type_name = "BOOLEAN";
             self.advance();
         },
+        token.TokenType.date => {
+            col.type_name = "DATE";
+            self.advance();
+        },
+        token.TokenType.time => {
+            col.type_name = "TIME";
+            self.advance();
+        },
+        token.TokenType.datetime => {
+            col.type_name = "DATETIME";
+            self.advance();
+        },
         else => {
             if (self.current.type == .ident) {
                 col.type_name = self.current.literal;

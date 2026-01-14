@@ -6,7 +6,8 @@ pub const COL_ID_SIZE: usize = 4;
 pub const COL_USERNAME_SIZE: usize = 32;
 pub const COL_EMAIL_SIZE: usize = 255;
 pub const COL_ACTIVE_SIZE: usize = 1;
-pub const ROW_SIZE: usize = COL_ID_SIZE + COL_USERNAME_SIZE + COL_EMAIL_SIZE + COL_ACTIVE_SIZE;
+pub const COL_CREATED_AT_SIZE: usize = 8; // i64 timestamp
+pub const ROW_SIZE: usize = COL_ID_SIZE + COL_USERNAME_SIZE + COL_EMAIL_SIZE + COL_ACTIVE_SIZE + COL_CREATED_AT_SIZE;
 
 pub const PAGE_SIZE = @import("pager.zig").PAGE_SIZE;
 
@@ -15,17 +16,23 @@ pub const Row = struct {
     username: [COL_USERNAME_SIZE]u8,
     email: [COL_EMAIL_SIZE]u8,
     active: bool,
+    created_at: i64, // Unix timestamp for datetime
 
     pub fn init(id: u32, username: []const u8, email: []const u8) Row {
-        return Row.initWithActive(id, username, email, false);
+        return Row.initFull(id, username, email, false, 0);
     }
 
     pub fn initWithActive(id: u32, username: []const u8, email: []const u8, active: bool) Row {
+        return Row.initFull(id, username, email, active, 0);
+    }
+
+    pub fn initFull(id: u32, username: []const u8, email: []const u8, active: bool, created_at: i64) Row {
         var r = Row{
             .id = id,
             .username = std.mem.zeroes([COL_USERNAME_SIZE]u8),
             .email = std.mem.zeroes([COL_EMAIL_SIZE]u8),
             .active = active,
+            .created_at = created_at,
         };
 
         const u_len = @min(username.len, COL_USERNAME_SIZE);
@@ -50,6 +57,9 @@ pub const Row = struct {
         const active_offset = email_offset + COL_EMAIL_SIZE;
         buf[active_offset] = if (self.active) 1 else 0;
 
+        const created_at_offset = active_offset + COL_ACTIVE_SIZE;
+        std.mem.writeInt(i64, buf[created_at_offset..][0..8], self.created_at, .little);
+
         return buf;
     }
 };
@@ -66,6 +76,9 @@ pub fn deserialize_row(data: []const u8) Row {
 
     const active_offset = email_offset + COL_EMAIL_SIZE;
     row.active = data[active_offset] != 0;
+
+    const created_at_offset = active_offset + COL_ACTIVE_SIZE;
+    row.created_at = std.mem.readInt(i64, data[created_at_offset..][0..8], .little);
 
     return row;
 }

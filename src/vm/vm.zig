@@ -309,6 +309,11 @@ pub const VM = struct {
                 const active = row_data[active_offset] != 0;
                 self.registers[dest_reg] = RegisterValue.init_boolean(active);
             },
+            4 => {
+                const created_at_offset = storage.row.COL_ID_SIZE + storage.row.COL_USERNAME_SIZE + storage.row.COL_EMAIL_SIZE + storage.row.COL_ACTIVE_SIZE;
+                const created_at = std.mem.readInt(i64, row_data[created_at_offset..][0..8], .little);
+                self.registers[dest_reg] = RegisterValue.init_integer(created_at);
+            },
             else => self.registers[dest_reg] = RegisterValue.init_null(),
         }
 
@@ -346,6 +351,7 @@ pub const VM = struct {
         var username: []const u8 = "";
         var email: []const u8 = "";
         var active: bool = false;
+        var created_at: i64 = 0;
 
         if (inst.p3 > 1) {
             const reg = self.registers[start_reg + 1];
@@ -354,8 +360,11 @@ pub const VM = struct {
             } else if (reg.type == .boolean) {
                 active = reg.boolean;
             } else if (reg.type == .integer) {
-                // Boolean stored as integer 0/1
-                active = reg.integer != 0;
+                if (reg.integer <= 1) {
+                    active = reg.integer != 0;
+                } else {
+                    created_at = reg.integer;
+                }
             }
         }
         if (inst.p3 > 2) {
@@ -365,7 +374,11 @@ pub const VM = struct {
             } else if (reg.type == .boolean) {
                 active = reg.boolean;
             } else if (reg.type == .integer) {
-                active = reg.integer != 0;
+                if (reg.integer <= 1) {
+                    active = reg.integer != 0;
+                } else {
+                    created_at = reg.integer;
+                }
             }
         }
         if (inst.p3 > 3) {
@@ -373,15 +386,25 @@ pub const VM = struct {
             if (reg.type == .boolean) {
                 active = reg.boolean;
             } else if (reg.type == .integer) {
-                active = reg.integer != 0;
+                if (reg.integer <= 1) {
+                    active = reg.integer != 0;
+                } else {
+                    created_at = reg.integer;
+                }
+            }
+        }
+        if (inst.p3 > 4) {
+            const reg = self.registers[start_reg + 4];
+            if (reg.type == .integer) {
+                created_at = reg.integer;
             }
         }
 
         if (self.debug) {
-            print("[VM] op_insert: key={}, username='{s}', email='{s}', active={}, num_cols={}\n", .{ key, username, email, active, inst.p3 });
+            print("[VM] op_insert: key={}, username='{s}', email='{s}', active={}, created_at={}, num_cols={}\n", .{ key, username, email, active, created_at, inst.p3 });
         }
 
-        const row = storage.Row.initWithActive(key, username, email, active);
+        const row = storage.Row.initFull(key, username, email, active, created_at);
         try table.insert(key, row);
 
         self.pc += 1;

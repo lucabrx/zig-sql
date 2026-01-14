@@ -7,6 +7,9 @@ pub const Type = enum {
     Real,
     Blob,
     Boolean,
+    Date, // Stored as i64 (days since epoch)
+    Time, // Stored as i64 (seconds since midnight)
+    Datetime, // Stored as i64 (unix timestamp)
 };
 
 pub const Column = struct {
@@ -52,10 +55,12 @@ pub const Schema = struct {
         switch (col_type) {
             .Integer => return 8,
             .Real => return 8,
-            .Text => return 4 + 256, // 4 bytes for length + 256 bytes for data
-            .Blob => return 4 + 512, // for now fixed
+            .Text => return 4 + 256,
+            .Blob => return 4 + 512,
             .Boolean => return 1,
-            else => return 8,
+            .Date => return 8,
+            .Time => return 8,
+            .Datetime => return 8,
         }
     }
 
