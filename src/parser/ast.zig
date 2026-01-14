@@ -10,6 +10,11 @@ pub const Expression = union(enum) {
     star_expression: StarExpression,
     binary_expression: *BinaryExpression,
     unary_expression: *UnaryExpression,
+    subquery: *SubqueryExpression,
+};
+
+pub const SubqueryExpression = struct {
+    select: SelectStatement,
 };
 
 pub const Statement = union(enum) {

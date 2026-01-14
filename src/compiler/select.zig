@@ -258,11 +258,21 @@ fn compile_join_expression(c: *Compiler, expr: Expression, tables: []const Table
                 _ = try c.emit(.@"or", left_reg, right_reg, dest_reg, "", null);
             }
         },
+        .subquery => |subq| {
+            const subq_ptr = c.allocator.create(ast.SubqueryExpression) catch return CompilerError.OutOfMemory;
+            subq_ptr.* = subq.*;
+            _ = try c.emit(.subquery, dest_reg, 0, 0, "", @ptrCast(subq_ptr));
+        },
         else => {},
     }
 }
 
-fn compile_full_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema, output_cols: []i32) !void {
+const ColInfo = union(enum) {
+    column_idx: i32,
+    expression: Expression,
+};
+
+fn compile_full_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema, output_cols: []ColInfo) !void {
     _ = try c.emit(.open_read, 0, 0, 0, stmt.from, null);
 
     const rewind_addr = try c.emit(.rewind, 0, 0, 0, "", null);
@@ -277,9 +287,16 @@ fn compile_full_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema,
     }
 
     const start_reg = c.next_reg;
-    for (output_cols) |col_idx| {
+    for (output_cols) |col_info| {
         const reg = c.alloc_reg();
-        _ = try c.emit(.column, 0, col_idx, reg, "", null);
+        switch (col_info) {
+            .column_idx => |col_idx| {
+                _ = try c.emit(.column, 0, col_idx, reg, "", null);
+            },
+            .expression => |expr| {
+                try expression.compile_expression(c, expr, reg, schema);
+            },
+        }
     }
 
     _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), 0, "", null);
@@ -296,7 +313,7 @@ fn compile_full_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema,
     c.patch(rewind_addr, @intCast(close_addr));
 }
 
-fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema, output_cols: []i32, candidate: IndexCandidate) !void {
+fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema, output_cols: []ColInfo, candidate: IndexCandidate) !void {
     const value_reg = c.alloc_reg();
     try expression.compile_expression(c, candidate.value, value_reg, schema);
 
@@ -306,9 +323,16 @@ fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema
     const loop_start = c.current_addr();
 
     const start_reg = c.next_reg;
-    for (output_cols) |col_idx| {
+    for (output_cols) |col_info| {
         const reg = c.alloc_reg();
-        _ = try c.emit(.column, 0, col_idx, reg, "", null);
+        switch (col_info) {
+            .column_idx => |col_idx| {
+                _ = try c.emit(.column, 0, col_idx, reg, "", null);
+            },
+            .expression => |expr| {
+                try expression.compile_expression(c, expr, reg, schema);
+            },
+        }
     }
 
     _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), 0, "", null);
@@ -381,27 +405,29 @@ fn find_index_for_column(c: *Compiler, table_name: []const u8, column_name: []co
     return null;
 }
 
-fn resolve_select_columns(c: *Compiler, cols: []const Expression, schema: *const Schema) ![]i32 {
-    var indices = std.ArrayList(i32){};
+fn resolve_select_columns(c: *Compiler, cols: []const Expression, schema: *const Schema) ![]ColInfo {
+    var result = std.ArrayList(ColInfo){};
 
     for (cols) |col| {
         switch (col) {
             .star_expression => {
                 for (0..schema.columns.len) |i| {
-                    try indices.append(c.allocator, @intCast(i));
+                    try result.append(c.allocator, .{ .column_idx = @intCast(i) });
                 }
             },
             .identifier => |ident| {
                 const idx = get_column_index(schema, ident.name);
                 if (idx >= 0) {
-                    try indices.append(c.allocator, idx);
+                    try result.append(c.allocator, .{ .column_idx = idx });
                 }
             },
-            else => {},
+            else => {
+                try result.append(c.allocator, .{ .expression = col });
+            },
         }
     }
 
-    return try indices.toOwnedSlice(c.allocator);
+    return try result.toOwnedSlice(c.allocator);
 }
 
 fn get_column_index(schema: *const Schema, name: []const u8) i32 {

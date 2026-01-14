@@ -256,7 +256,19 @@ pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
         },
         token.TokenType.lparen => {
             self.advance();
-            const expr = try parse_primary_expression(self);
+            if (self.current.type == token.TokenType.select) {
+                const select = @import("select.zig");
+                const subquery_stmt = try select.parse_select(self);
+                if (!self.expect(token.TokenType.rparen)) {
+                    return error.ExpectedCloseParen;
+                }
+                const subquery = self.allocator.create(ast.SubqueryExpression) catch return error.OutOfMemory;
+                subquery.* = ast.SubqueryExpression{
+                    .select = subquery_stmt,
+                };
+                return ast.Expression{ .subquery = subquery };
+            }
+            const expr = try parse_or_expression(self);
             if (!self.expect(token.TokenType.rparen)) {
                 return error.ExpectedCloseParen;
             }

@@ -453,6 +453,7 @@ pub const REPL = struct {
                 try self.writer.print("{s} ", .{unary_expr.operator});
                 try self.format_expression(unary_expr.right);
             },
+            .subquery => try self.writer.writeAll("(SUBQUERY)"),
         }
     }
 };

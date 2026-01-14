@@ -139,6 +139,13 @@ pub const VM = struct {
         }
     }
 
+    pub fn run_subquery(self: *VM) anyerror!void {
+        while (!self.halted and self.pc < self.program.len) {
+            const inst = self.program[self.pc];
+            try self.execute(inst);
+        }
+    }
+
     pub fn get_results(self: *VM) [][]RegisterValue {
         return self.results.items;
     }
@@ -208,6 +215,7 @@ pub const VM = struct {
             .txn_set_isolation => try self.op_txn_set_isolation(inst),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .@"and", .@"or" => try self.op_logical(inst),
+            .subquery => try self.op_subquery(inst),
             .delete => try self.op_delete(inst),
             else => return VmErrors.InvalidOp,
         }
@@ -551,6 +559,46 @@ pub const VM = struct {
         };
 
         self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn op_subquery(self: *VM, inst: Instruction) !void {
+        const dest_reg: usize = @intCast(inst.p1);
+
+        if (inst.p5) |ptr| {
+            const ast = @import("../parser/ast.zig");
+            const Compiler = @import("../compiler/compiler.zig").Compiler;
+
+            const subq: *ast.SubqueryExpression = @ptrCast(@alignCast(ptr));
+
+            var sub_compiler = Compiler.init(self.allocator, self.allocator, self.db);
+            defer sub_compiler.deinit();
+
+            const sub_instructions = sub_compiler.compile(ast.Statement{ .select_stmt = subq.select }) catch {
+                self.registers[dest_reg] = RegisterValue.init_null();
+                self.pc += 1;
+                return;
+            };
+
+            var sub_vm = VM.init(self.allocator, self.db);
+            sub_vm.set_debug(false);
+            defer sub_vm.deinit();
+
+            sub_vm.load(sub_instructions);
+            if (sub_vm.run_subquery()) {
+                const sub_results = sub_vm.get_results();
+                if (sub_results.len > 0 and sub_results[0].len > 0) {
+                    self.registers[dest_reg] = sub_results[0][0];
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            } else |_| {
+                self.registers[dest_reg] = RegisterValue.init_null();
+            }
+        } else {
+            self.registers[dest_reg] = RegisterValue.init_null();
+        }
+
         self.pc += 1;
     }
 };

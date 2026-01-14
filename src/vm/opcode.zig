@@ -72,6 +72,8 @@ pub const Opcode = enum(u8) {
     txn_rollback_to,
     txn_set_isolation,
 
+    subquery,
+
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
             .init => "INIT",
@@ -122,6 +124,7 @@ pub const Opcode = enum(u8) {
             .txn_release => "TXN_RELEASE",
             .txn_rollback_to => "TXN_ROLLBACK_TO",
             .txn_set_isolation => "TXN_SET_ISOLATION",
+            .subquery => "SUBQUERY",
         };
     }
 };

@@ -32,7 +32,6 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
             _ = try c.emit(.null, dest_reg, 0, 0, "", null);
         },
         .star_expression => {
-            // Not valid in WHERE clause
             _ = try c.emit(.null, dest_reg, 0, 0, "", null);
         },
         .binary_expression => |bin_expr| {
@@ -41,7 +40,16 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
         .unary_expression => |unary_expr| {
             try compile_unary_expression(c, unary_expr, dest_reg);
         },
+        .subquery => |subq| {
+            try compile_subquery(c, subq, dest_reg);
+        },
     }
+}
+
+fn compile_subquery(c: *Compiler, subq: *ast.SubqueryExpression, dest_reg: i32) CompileError!void {
+    const subq_ptr = c.allocator.create(ast.SubqueryExpression) catch return CompileError.OutOfMemory;
+    subq_ptr.* = subq.*;
+    _ = try c.emit(.subquery, dest_reg, 0, 0, "", @ptrCast(subq_ptr));
 }
 
 fn compile_binary_expression(c: *Compiler, bin_expr: *ast.BinaryExpression, dest_reg: i32) CompileError!void {
@@ -93,7 +101,6 @@ fn compile_unary_expression(c: *Compiler, unary_expr: *ast.UnaryExpression, dest
 }
 
 fn get_column_index(name: []const u8) i32 {
-    // TODO: Look up in schema
     if (std.mem.eql(u8, name, "id")) return 0;
     if (std.mem.eql(u8, name, "username")) return 1;
     if (std.mem.eql(u8, name, "email")) return 2;

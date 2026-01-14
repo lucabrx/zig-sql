@@ -158,20 +158,15 @@ fn parse_select_columns(self: *Parser) ParseError![]ast.Expression {
     defer columns.deinit(self.allocator);
 
     while (true) {
-        if (self.current.type == token.TokenType.asterisk) {
-            try columns.append(self.allocator, ast.Expression{ .star_expression = .{} });
-            self.advance();
-        } else if (self.current.type == token.TokenType.ident) {
-            const ident = ast.Identifier{
-                .name = self.current.literal,
-            };
-            try columns.append(self.allocator, ast.Expression{
-                .identifier = ident,
-            });
-            self.advance();
-        } else {
+        if (self.current.type == token.TokenType.from or
+            self.current.type == token.TokenType.semicolon or
+            self.current.type == token.TokenType.eof)
+        {
             break;
         }
+
+        const expr = try self.parse_or_expression();
+        try columns.append(self.allocator, expr);
 
         if (self.current.type == token.TokenType.comma) {
             self.advance();
