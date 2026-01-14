@@ -35,6 +35,7 @@ pub const RegisterValue = struct {
     integer: i64 = 0,
     real: f64 = 0.0,
     text: []const u8 = "",
+    blob: []const u8 = "",
     boolean: bool = false,
     is_null: bool = true,
 
@@ -42,6 +43,7 @@ pub const RegisterValue = struct {
         integer,
         real,
         text,
+        blob,
         null,
         boolean,
     };
@@ -82,6 +84,14 @@ pub const RegisterValue = struct {
         return RegisterValue{
             .type = .boolean,
             .boolean = value,
+            .is_null = false,
+        };
+    }
+
+    pub fn init_blob(value: []const u8) RegisterValue {
+        return RegisterValue{
+            .type = .blob,
+            .blob = value,
             .is_null = false,
         };
     }
@@ -212,6 +222,10 @@ pub const VM = struct {
                 self.registers[@intCast(inst.p1)] = RegisterValue.init_text(inst.p4);
                 self.pc += 1;
             },
+            .blob => {
+                self.registers[@intCast(inst.p1)] = RegisterValue.init_blob(inst.p4);
+                self.pc += 1;
+            },
             .null => {
                 self.registers[@intCast(inst.p1)] = RegisterValue.init_null();
                 self.pc += 1;
@@ -314,6 +328,13 @@ pub const VM = struct {
                 const created_at = std.mem.readInt(i64, row_data[created_at_offset..][0..8], .little);
                 self.registers[dest_reg] = RegisterValue.init_integer(created_at);
             },
+            5 => {
+                const blob_len_offset = storage.row.COL_ID_SIZE + storage.row.COL_USERNAME_SIZE + storage.row.COL_EMAIL_SIZE + storage.row.COL_ACTIVE_SIZE + storage.row.COL_CREATED_AT_SIZE;
+                const blob_len = std.mem.readInt(u32, row_data[blob_len_offset..][0..4], .little);
+                const blob_data_offset = blob_len_offset + storage.row.COL_BLOB_LEN_SIZE;
+                const blob_data = row_data[blob_data_offset .. blob_data_offset + blob_len];
+                self.registers[dest_reg] = RegisterValue.init_blob(blob_data);
+            },
             else => self.registers[dest_reg] = RegisterValue.init_null(),
         }
 
@@ -351,6 +372,7 @@ pub const VM = struct {
         var email: []const u8 = "";
         var active: bool = false;
         var created_at: i64 = 0;
+        var blob: []const u8 = "";
 
         if (inst.p3 > 1) {
             const reg = self.registers[start_reg + 1];
@@ -364,6 +386,8 @@ pub const VM = struct {
                 } else {
                     created_at = reg.integer;
                 }
+            } else if (reg.type == .blob) {
+                blob = reg.blob;
             }
         }
         if (inst.p3 > 2) {
@@ -378,6 +402,8 @@ pub const VM = struct {
                 } else {
                     created_at = reg.integer;
                 }
+            } else if (reg.type == .blob) {
+                blob = reg.blob;
             }
         }
         if (inst.p3 > 3) {
@@ -390,20 +416,32 @@ pub const VM = struct {
                 } else {
                     created_at = reg.integer;
                 }
+            } else if (reg.type == .blob) {
+                blob = reg.blob;
             }
         }
         if (inst.p3 > 4) {
             const reg = self.registers[start_reg + 4];
             if (reg.type == .integer) {
                 created_at = reg.integer;
+            } else if (reg.type == .blob) {
+                blob = reg.blob;
+            }
+        }
+        if (inst.p3 > 5) {
+            const reg = self.registers[start_reg + 5];
+            if (reg.type == .blob) {
+                blob = reg.blob;
+            } else if (reg.type == .text) {
+                blob = reg.text;
             }
         }
 
         if (self.debug) {
-            print("[VM] op_insert: key={}, username='{s}', email='{s}', active={}, created_at={}, num_cols={}\n", .{ key, username, email, active, created_at, inst.p3 });
+            print("[VM] op_insert: key={}, username='{s}', email='{s}', active={}, created_at={}, blob_len={}, num_cols={}\n", .{ key, username, email, active, created_at, blob.len, inst.p3 });
         }
 
-        const row = storage.Row.initFull(key, username, email, active, created_at);
+        const row = storage.Row.initFull(key, username, email, active, created_at, blob);
         try table.insert(key, row);
 
         self.pc += 1;

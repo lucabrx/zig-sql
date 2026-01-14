@@ -31,6 +31,7 @@ pub const Opcode = enum(u8) {
     integer,
     string,
     real,
+    blob,
     null,
     copy,
 
@@ -78,6 +79,7 @@ pub const Opcode = enum(u8) {
             .integer => "INTEGER",
             .string => "STRING",
             .real => "REAL",
+            .blob => "BLOB",
             .null => "NULL",
             .copy => "COPY",
             .eq => "EQ",

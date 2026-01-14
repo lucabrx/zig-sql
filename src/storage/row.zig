@@ -7,7 +7,10 @@ pub const COL_USERNAME_SIZE: usize = 32;
 pub const COL_EMAIL_SIZE: usize = 255;
 pub const COL_ACTIVE_SIZE: usize = 1;
 pub const COL_CREATED_AT_SIZE: usize = 8;
-pub const ROW_SIZE: usize = COL_ID_SIZE + COL_USERNAME_SIZE + COL_EMAIL_SIZE + COL_ACTIVE_SIZE + COL_CREATED_AT_SIZE;
+pub const COL_BLOB_LEN_SIZE: usize = 4;
+pub const COL_BLOB_DATA_SIZE: usize = 512;
+pub const COL_BLOB_SIZE: usize = COL_BLOB_LEN_SIZE + COL_BLOB_DATA_SIZE;
+pub const ROW_SIZE: usize = COL_ID_SIZE + COL_USERNAME_SIZE + COL_EMAIL_SIZE + COL_ACTIVE_SIZE + COL_CREATED_AT_SIZE + COL_BLOB_SIZE;
 
 pub const PAGE_SIZE = @import("pager.zig").PAGE_SIZE;
 
@@ -17,22 +20,26 @@ pub const Row = struct {
     email: [COL_EMAIL_SIZE]u8,
     active: bool,
     created_at: i64,
+    blob_len: u32,
+    blob_data: [COL_BLOB_DATA_SIZE]u8,
 
     pub fn init(id: u32, username: []const u8, email: []const u8) Row {
-        return Row.initFull(id, username, email, false, 0);
+        return Row.initFull(id, username, email, false, 0, "");
     }
 
     pub fn initWithActive(id: u32, username: []const u8, email: []const u8, active: bool) Row {
-        return Row.initFull(id, username, email, active, 0);
+        return Row.initFull(id, username, email, active, 0, "");
     }
 
-    pub fn initFull(id: u32, username: []const u8, email: []const u8, active: bool, created_at: i64) Row {
+    pub fn initFull(id: u32, username: []const u8, email: []const u8, active: bool, created_at: i64, blob: []const u8) Row {
         var r = Row{
             .id = id,
             .username = std.mem.zeroes([COL_USERNAME_SIZE]u8),
             .email = std.mem.zeroes([COL_EMAIL_SIZE]u8),
             .active = active,
             .created_at = created_at,
+            .blob_len = 0,
+            .blob_data = std.mem.zeroes([COL_BLOB_DATA_SIZE]u8),
         };
 
         const u_len = @min(username.len, COL_USERNAME_SIZE);
@@ -40,6 +47,10 @@ pub const Row = struct {
 
         const e_len = @min(email.len, COL_EMAIL_SIZE);
         @memcpy(r.email[0..e_len], email[0..e_len]);
+
+        const b_len = @min(blob.len, COL_BLOB_DATA_SIZE);
+        r.blob_len = @intCast(b_len);
+        @memcpy(r.blob_data[0..b_len], blob[0..b_len]);
 
         return r;
     }
@@ -60,6 +71,12 @@ pub const Row = struct {
         const created_at_offset = active_offset + COL_ACTIVE_SIZE;
         std.mem.writeInt(i64, buf[created_at_offset..][0..8], self.created_at, .little);
 
+        const blob_len_offset = created_at_offset + COL_CREATED_AT_SIZE;
+        std.mem.writeInt(u32, buf[blob_len_offset..][0..4], self.blob_len, .little);
+
+        const blob_data_offset = blob_len_offset + COL_BLOB_LEN_SIZE;
+        @memcpy(buf[blob_data_offset .. blob_data_offset + COL_BLOB_DATA_SIZE], &self.blob_data);
+
         return buf;
     }
 };
@@ -79,6 +96,12 @@ pub fn deserialize_row(data: []const u8) Row {
 
     const created_at_offset = active_offset + COL_ACTIVE_SIZE;
     row.created_at = std.mem.readInt(i64, data[created_at_offset..][0..8], .little);
+
+    const blob_len_offset = created_at_offset + COL_CREATED_AT_SIZE;
+    row.blob_len = std.mem.readInt(u32, data[blob_len_offset..][0..4], .little);
+
+    const blob_data_offset = blob_len_offset + COL_BLOB_LEN_SIZE;
+    @memcpy(&row.blob_data, data[blob_data_offset .. blob_data_offset + COL_BLOB_DATA_SIZE]);
 
     return row;
 }
@@ -175,14 +198,14 @@ test "row size constants" {
     try std.testing.expectEqual(4, COL_ID_SIZE);
     try std.testing.expectEqual(32, COL_USERNAME_SIZE);
     try std.testing.expectEqual(255, COL_EMAIL_SIZE);
-    try std.testing.expectEqual(291, ROW_SIZE);
+    try std.testing.expectEqual(816, ROW_SIZE);
 }
 
 test "max leaf cells calculation" {
     const max_cells = max_leaf_cells();
-    // PAGE_SIZE = 4096, LEAF_HEADER_SIZE = 14, LEAF_CELL_SIZE = 4 + 291 = 295
-    // (4096 - 14) / 295 = 13
-    try std.testing.expectEqual(13, max_cells);
+    // PAGE_SIZE = 4096, LEAF_HEADER_SIZE = 14, LEAF_CELL_SIZE = 4 + 816 = 820
+    // (4096 - 14) / 820 = 4
+    try std.testing.expectEqual(4, max_cells);
 }
 
 test "leaf cell key operations" {

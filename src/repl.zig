@@ -235,6 +235,13 @@ pub const REPL = struct {
                     .integer => try self.writer.print("{d}", .{val.integer}),
                     .real => try self.writer.print("{d:.2}", .{val.real}),
                     .text => try self.writer.print("{s}", .{val.text}),
+                    .blob => {
+                        try self.writer.writeAll("BLOB(");
+                        for (val.blob) |byte| {
+                            try self.writer.print("{X:0>2}", .{byte});
+                        }
+                        try self.writer.writeAll(")");
+                    },
                     .boolean => try self.writer.print("{s}", .{if (val.boolean) "TRUE" else "FALSE"}),
                     .null => try self.writer.writeAll("NULL"),
                 }
