@@ -1593,6 +1593,83 @@ pub const VM = struct {
                     self.registers[dest_reg] = RegisterValue.init_null();
                 }
             }
+        } else if (std.mem.eql(u8, upper_name, "ABS")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                if (arg.type == .integer) {
+                    self.registers[dest_reg] = RegisterValue.init_integer(if (arg.integer < 0) -arg.integer else arg.integer);
+                } else if (arg.type == .real) {
+                    self.registers[dest_reg] = RegisterValue.init_real(@abs(arg.real));
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "ROUND")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                if (arg.type == .real) {
+                    self.registers[dest_reg] = RegisterValue.init_integer(@intFromFloat(@round(arg.real)));
+                } else if (arg.type == .integer) {
+                    self.registers[dest_reg] = RegisterValue.init_integer(arg.integer);
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "FLOOR")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                if (arg.type == .real) {
+                    self.registers[dest_reg] = RegisterValue.init_integer(@intFromFloat(@floor(arg.real)));
+                } else if (arg.type == .integer) {
+                    self.registers[dest_reg] = RegisterValue.init_integer(arg.integer);
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "CEIL")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                if (arg.type == .real) {
+                    self.registers[dest_reg] = RegisterValue.init_integer(@intFromFloat(@ceil(arg.real)));
+                } else if (arg.type == .integer) {
+                    self.registers[dest_reg] = RegisterValue.init_integer(arg.integer);
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "COALESCE")) {
+            self.registers[dest_reg] = RegisterValue.init_null();
+            for (0..arg_count) |i| {
+                const arg = self.registers[arg_start + i];
+                if (!arg.is_null and arg.type != .null) {
+                    self.registers[dest_reg] = arg;
+                    break;
+                }
+            }
+        } else if (std.mem.eql(u8, upper_name, "NULLIF")) {
+            if (arg_count >= 2) {
+                const arg1 = self.registers[arg_start];
+                const arg2 = self.registers[arg_start + 1];
+                if (self.values_equal(arg1, arg2)) {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                } else {
+                    self.registers[dest_reg] = arg1;
+                }
+            } else {
+                self.registers[dest_reg] = RegisterValue.init_null();
+            }
+        } else if (std.mem.eql(u8, upper_name, "IFNULL")) {
+            if (arg_count >= 2) {
+                const arg1 = self.registers[arg_start];
+                const arg2 = self.registers[arg_start + 1];
+                if (arg1.is_null or arg1.type == .null) {
+                    self.registers[dest_reg] = arg2;
+                } else {
+                    self.registers[dest_reg] = arg1;
+                }
+            } else {
+                self.registers[dest_reg] = RegisterValue.init_null();
+            }
         } else {
             self.registers[dest_reg] = RegisterValue.init_null();
         }

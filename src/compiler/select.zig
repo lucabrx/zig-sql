@@ -478,8 +478,13 @@ fn compile_full_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema,
     }
 
     const start_reg = c.next_reg;
-    for (output_cols) |col_info| {
-        const reg = c.alloc_reg();
+    const num_cols = output_cols.len;
+    for (0..num_cols) |_| {
+        _ = c.alloc_reg();
+    }
+
+    for (output_cols, 0..) |col_info, i| {
+        const reg: i32 = @intCast(start_reg + @as(i32, @intCast(i)));
         switch (col_info) {
             .column_idx => |col_idx| {
                 _ = try c.emit(.column, 0, col_idx, reg, "", null);
@@ -514,8 +519,13 @@ fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema
     const loop_start = c.current_addr();
 
     const start_reg = c.next_reg;
-    for (output_cols) |col_info| {
-        const reg = c.alloc_reg();
+    const num_cols = output_cols.len;
+    for (0..num_cols) |_| {
+        _ = c.alloc_reg();
+    }
+
+    for (output_cols, 0..) |col_info, i| {
+        const reg: i32 = @intCast(start_reg + @as(i32, @intCast(i)));
         switch (col_info) {
             .column_idx => |col_idx| {
                 _ = try c.emit(.column, 0, col_idx, reg, "", null);

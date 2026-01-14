@@ -117,6 +117,13 @@ pub const TokenType = enum {
     concat,
     trim,
     check,
+    abs,
+    round,
+    floor,
+    ceil,
+    coalesce,
+    nullif,
+    ifnull,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -232,6 +239,13 @@ pub const TokenType = enum {
             .concat => "CONCAT",
             .trim => "TRIM",
             .check => "CHECK",
+            .abs => "ABS",
+            .round => "ROUND",
+            .floor => "FLOOR",
+            .ceil => "CEIL",
+            .coalesce => "COALESCE",
+            .nullif => "NULLIF",
+            .ifnull => "IFNULL",
         };
     }
 };
@@ -334,6 +348,13 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "CONCAT", .concat },
     .{ "TRIM", .trim },
     .{ "CHECK", .check },
+    .{ "ABS", .abs },
+    .{ "ROUND", .round },
+    .{ "FLOOR", .floor },
+    .{ "CEIL", .ceil },
+    .{ "COALESCE", .coalesce },
+    .{ "NULLIF", .nullif },
+    .{ "IFNULL", .ifnull },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

@@ -437,7 +437,7 @@ pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
         token.TokenType.case => {
             return try parse_case(self);
         },
-        token.TokenType.upper, token.TokenType.lower, token.TokenType.length, token.TokenType.substr, token.TokenType.concat, token.TokenType.trim => {
+        token.TokenType.upper, token.TokenType.lower, token.TokenType.length, token.TokenType.substr, token.TokenType.concat, token.TokenType.trim, token.TokenType.abs, token.TokenType.round, token.TokenType.floor, token.TokenType.ceil, token.TokenType.coalesce, token.TokenType.nullif, token.TokenType.ifnull => {
             return try parse_function_call(self);
         },
         else => {
