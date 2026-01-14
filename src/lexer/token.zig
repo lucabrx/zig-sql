@@ -128,6 +128,10 @@ pub const TokenType = enum {
     cast,
     strftime,
     vacuum,
+    references,
+    cascade,
+    restrict,
+    action,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -254,6 +258,10 @@ pub const TokenType = enum {
             .cast => "CAST",
             .strftime => "STRFTIME",
             .vacuum => "VACUUM",
+            .references => "REFERENCES",
+            .cascade => "CASCADE",
+            .restrict => "RESTRICT",
+            .action => "ACTION",
         };
     }
 };
@@ -367,6 +375,10 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "CAST", .cast },
     .{ "STRFTIME", .strftime },
     .{ "VACUUM", .vacuum },
+    .{ "REFERENCES", .references },
+    .{ "CASCADE", .cascade },
+    .{ "RESTRICT", .restrict },
+    .{ "ACTION", .action },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

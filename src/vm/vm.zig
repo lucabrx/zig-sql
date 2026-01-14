@@ -537,6 +537,45 @@ pub const VM = struct {
         }
     }
 
+    fn validate_foreign_key_constraints(self: *VM, table: *storage.Table, start_reg: usize, num_cols: usize) !void {
+        const schema = table.schema;
+        const cols_to_check = @min(num_cols, schema.columns.len);
+
+        for (0..cols_to_check) |i| {
+            const col = schema.columns[i];
+            const fk = col.foreign_key orelse continue;
+
+            const reg = self.registers[start_reg + i];
+            if (reg.type == .null or reg.is_null) continue;
+
+            const ref_table = self.db.get_table(fk.ref_table) catch {
+                return VmErrors.ForeignKeyViolation;
+            };
+
+            const ref_col_idx = ref_table.schema.get_column_index(fk.ref_column) catch {
+                return VmErrors.ForeignKeyViolation;
+            };
+
+            var found = false;
+            var cursor = storage.Cursor.new_cursor_start(&ref_table.btree) catch continue;
+            while (!cursor.is_end()) {
+                const page = self.db.pager.get_page(cursor.page_num) catch break;
+                const ref_val = storage.row.get_value_from_page(page, cursor.cell_num, ref_table.schema, ref_col_idx);
+                const ref_reg = RegisterValue.from_row_value(ref_val);
+
+                if (self.values_equal(reg, ref_reg)) {
+                    found = true;
+                    break;
+                }
+                cursor.advance() catch break;
+            }
+
+            if (!found) {
+                return VmErrors.ForeignKeyViolation;
+            }
+        }
+    }
+
     fn op_insert(self: *VM, inst: Instruction) !void {
         const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
         const start_reg: usize = @intCast(inst.p2);
@@ -558,6 +597,7 @@ pub const VM = struct {
         try self.validate_type_constraints(table, start_reg, num_cols);
         try self.validate_check_constraints(table, start_reg, num_cols);
         try self.validate_unique_constraints(table, start_reg, num_cols);
+        try self.validate_foreign_key_constraints(table, start_reg, num_cols);
 
         const key: u32 = @intCast(self.registers[start_reg].integer);
 
@@ -729,6 +769,8 @@ pub const VM = struct {
         const rowid = storage.row.get_leaf_key(page, cell_to_delete);
         const row = storage.row.get_leaf_row(page, cell_to_delete, table.schema);
 
+        try self.handle_foreign_key_on_delete(table, &row);
+
         self.db.delete_from_indexes(table.schema.table_name, rowid, &row) catch {};
 
         try self.db.transaction.save_page_for_rollback(page_num);
@@ -750,6 +792,120 @@ pub const VM = struct {
         try self.db.wal_log_page(page_num);
 
         self.pc += 1;
+    }
+
+    fn handle_foreign_key_on_delete(self: *VM, parent_table: *storage.Table, deleted_row: *const storage.DynamicRow) !void {
+        const schema_mod = @import("../storage/schema.zig");
+        var table_iter = self.db.tables.iterator();
+
+        while (table_iter.next()) |entry| {
+            const child_table = entry.value_ptr.*;
+            const child_schema = child_table.schema;
+
+            for (child_schema.columns, 0..) |col, col_idx| {
+                const fk = col.foreign_key orelse continue;
+                if (!std.mem.eql(u8, fk.ref_table, parent_table.schema.table_name)) continue;
+
+                const ref_col_idx = parent_table.schema.get_column_index(fk.ref_column) catch continue;
+                const deleted_val = deleted_row.get_value(parent_table.schema, ref_col_idx);
+
+                switch (fk.on_delete) {
+                    .cascade => {
+                        try self.cascade_delete(child_table, col_idx, deleted_val);
+                    },
+                    .set_null => {
+                        try self.set_null_on_delete(child_table, col_idx, deleted_val);
+                    },
+                    .restrict => {
+                        if (try self.has_referencing_rows(child_table, col_idx, deleted_val)) {
+                            return VmErrors.ForeignKeyViolation;
+                        }
+                    },
+                    else => {},
+                }
+                _ = schema_mod;
+            }
+        }
+    }
+
+    fn cascade_delete(self: *VM, child_table: *storage.Table, col_idx: usize, parent_val: storage.RowValue) !void {
+        var cursor = storage.Cursor.new_cursor_start(&child_table.btree) catch return;
+
+        while (!cursor.is_end()) {
+            const page = self.db.pager.get_page(cursor.page_num) catch break;
+            const child_val = storage.row.get_value_from_page(page, cursor.cell_num, child_table.schema, col_idx);
+            if (self.row_values_equal(parent_val, child_val)) {
+                const num_cells = storage.node.get_num_cells(page);
+                const cell_to_delete = cursor.cell_num;
+
+                if (cell_to_delete < num_cells - 1) {
+                    var i: u32 = cell_to_delete;
+                    while (i < num_cells - 1) : (i += 1) {
+                        const src_offset = storage.row.leaf_cell_offset(i + 1);
+                        const dest_offset = storage.row.leaf_cell_offset(i);
+                        @memcpy(
+                            page.data[dest_offset .. dest_offset + storage.row.LEAF_CELL_SIZE],
+                            page.data[src_offset .. src_offset + storage.row.LEAF_CELL_SIZE],
+                        );
+                    }
+                }
+                storage.node.set_num_cells(page, num_cells - 1);
+                self.db.pager.mark_dirty(cursor.page_num);
+            } else {
+                cursor.advance() catch break;
+            }
+        }
+    }
+
+    fn set_null_on_delete(self: *VM, child_table: *storage.Table, col_idx: usize, parent_val: storage.RowValue) !void {
+        var cursor = storage.Cursor.new_cursor_start(&child_table.btree) catch return;
+
+        while (!cursor.is_end()) {
+            const page = self.db.pager.get_page(cursor.page_num) catch break;
+            const child_val = storage.row.get_value_from_page(page, cursor.cell_num, child_table.schema, col_idx);
+            if (self.row_values_equal(parent_val, child_val)) {
+                storage.row.set_value_in_page(page, cursor.cell_num, child_table.schema, col_idx, .{ .null_val = {} });
+                self.db.pager.mark_dirty(cursor.page_num);
+            }
+            cursor.advance() catch break;
+        }
+    }
+
+    fn has_referencing_rows(self: *VM, child_table: *storage.Table, col_idx: usize, parent_val: storage.RowValue) !bool {
+        var cursor = storage.Cursor.new_cursor_start(&child_table.btree) catch return false;
+
+        while (!cursor.is_end()) {
+            const page = self.db.pager.get_page(cursor.page_num) catch break;
+            const child_val = storage.row.get_value_from_page(page, cursor.cell_num, child_table.schema, col_idx);
+            if (self.row_values_equal(parent_val, child_val)) {
+                return true;
+            }
+            cursor.advance() catch break;
+        }
+        return false;
+    }
+
+    fn row_values_equal(self: *VM, a: storage.RowValue, b: storage.RowValue) bool {
+        _ = self;
+        return switch (a) {
+            .integer => |av| switch (b) {
+                .integer => |bv| av == bv,
+                else => false,
+            },
+            .real => |av| switch (b) {
+                .real => |bv| av == bv,
+                else => false,
+            },
+            .text => |av| switch (b) {
+                .text => |bv| std.mem.eql(u8, av, bv),
+                else => false,
+            },
+            .boolean => |av| switch (b) {
+                .boolean => |bv| av == bv,
+                else => false,
+            },
+            else => false,
+        };
     }
 
     fn op_compare(self: *VM, inst: Instruction) !void {

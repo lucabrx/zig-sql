@@ -21,6 +21,21 @@ pub const DefaultValue = union(enum) {
     current_timestamp: void,
 };
 
+pub const ForeignKey = struct {
+    ref_table: []const u8,
+    ref_column: []const u8,
+    on_delete: ForeignKeyAction = .no_action,
+    on_update: ForeignKeyAction = .no_action,
+};
+
+pub const ForeignKeyAction = enum {
+    no_action,
+    cascade,
+    set_null,
+    set_default,
+    restrict,
+};
+
 pub const Column = struct {
     name: []const u8,
     type: Type,
@@ -29,6 +44,7 @@ pub const Column = struct {
     default: DefaultValue = .{ .none = {} },
     check: ?[]const u8 = null,
     unique: bool = false,
+    foreign_key: ?ForeignKey = null,
 };
 
 pub const Schema = struct {

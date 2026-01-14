@@ -171,6 +171,21 @@ pub const CreateTableStatement = struct {
     columns: []const ColumnDef,
 };
 
+pub const ForeignKeyAction = enum {
+    no_action,
+    cascade,
+    set_null,
+    set_default,
+    restrict,
+};
+
+pub const ForeignKeyDef = struct {
+    ref_table: []const u8,
+    ref_column: []const u8,
+    on_delete: ForeignKeyAction = .no_action,
+    on_update: ForeignKeyAction = .no_action,
+};
+
 pub const ColumnDef = struct {
     name: []const u8,
     type_name: []const u8,
@@ -178,6 +193,7 @@ pub const ColumnDef = struct {
     not_null: bool,
     check: ?[]const u8 = null,
     unique: bool = false,
+    foreign_key: ?ForeignKeyDef = null,
 };
 
 pub const DeleteStatement = struct {

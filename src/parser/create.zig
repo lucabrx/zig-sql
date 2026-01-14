@@ -243,6 +243,61 @@ fn parse_column_def(self: *Parser) ParseError!ast.ColumnDef {
             if (!self.expect(token.TokenType.rparen)) {
                 return error.ExpectedCloseParen;
             }
+        } else if (self.current.type == token.TokenType.references) {
+            self.advance();
+            if (self.current.type != token.TokenType.ident) {
+                return error.ExpectedIdentifier;
+            }
+            const ref_table = self.current.literal;
+            self.advance();
+
+            if (!self.expect(token.TokenType.lparen)) {
+                return error.ExpectedOpenParen;
+            }
+            if (self.current.type != token.TokenType.ident) {
+                return error.ExpectedIdentifier;
+            }
+            const ref_column = self.current.literal;
+            self.advance();
+            if (!self.expect(token.TokenType.rparen)) {
+                return error.ExpectedCloseParen;
+            }
+
+            var fk = ast.ForeignKeyDef{
+                .ref_table = ref_table,
+                .ref_column = ref_column,
+            };
+
+            while (self.current.type == token.TokenType.on) {
+                self.advance();
+                const is_delete = self.current.type == token.TokenType.delete;
+                const is_update = self.current.type == token.TokenType.update;
+                if (!is_delete and !is_update) break;
+                self.advance();
+
+                var action: ast.ForeignKeyAction = .no_action;
+                if (self.current.type == token.TokenType.cascade) {
+                    action = .cascade;
+                    self.advance();
+                } else if (self.current.type == token.TokenType.restrict) {
+                    action = .restrict;
+                    self.advance();
+                } else if (self.current.type == token.TokenType.set) {
+                    self.advance();
+                    if (self.current.type == token.TokenType.null) {
+                        action = .set_null;
+                        self.advance();
+                    }
+                }
+
+                if (is_delete) {
+                    fk.on_delete = action;
+                } else {
+                    fk.on_update = action;
+                }
+            }
+
+            col.foreign_key = fk;
         } else {
             break;
         }

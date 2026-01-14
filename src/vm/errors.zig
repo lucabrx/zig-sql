@@ -10,4 +10,5 @@ pub const VmErrors = error{
     TypeMismatch,
     CheckConstraintViolation,
     UniqueConstraintViolation,
+    ForeignKeyViolation,
 };

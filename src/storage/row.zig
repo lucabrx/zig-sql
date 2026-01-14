@@ -228,6 +228,36 @@ pub fn get_value_from_page(page: *Page, cell_num: u32, schema: *const Schema, co
     };
 }
 
+pub fn set_value_in_page(page: *Page, cell_num: u32, schema: *const Schema, col_index: usize, value: RowValue) void {
+    const cell_offset = leaf_cell_offset(cell_num);
+    const val_offset = cell_offset + 4;
+    var offset: usize = 0;
+
+    for (schema.columns[0..col_index]) |col| {
+        offset += 1 + column_storage_size(col.type);
+    }
+
+    switch (value) {
+        .null_val => {
+            page.data[val_offset + offset] = 1;
+        },
+        .integer => |v| {
+            page.data[val_offset + offset] = 0;
+            std.mem.writeInt(i64, page.data[val_offset + offset + 1 ..][0..8], v, .little);
+        },
+        .real => |v| {
+            page.data[val_offset + offset] = 0;
+            const bytes: [8]u8 = @bitCast(v);
+            @memcpy(page.data[val_offset + offset + 1 ..][0..8], &bytes);
+        },
+        .boolean => |v| {
+            page.data[val_offset + offset] = 0;
+            page.data[val_offset + offset + 1] = if (v) 1 else 0;
+        },
+        else => {},
+    }
+}
+
 pub fn set_leaf_row(page: *Page, cell_num: u32, row: *const DynamicRow) void {
     set_leaf_value(page, cell_num, row.as_bytes());
 }

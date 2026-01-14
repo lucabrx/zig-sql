@@ -9,9 +9,35 @@ const Column = @import("../storage/schema.zig").Column;
 const Type = @import("../storage/schema.zig").Type;
 
 pub fn compile_create_table(c: *Compiler, stmt: CreateTableStatement) !void {
+    const ForeignKey = @import("../storage/schema.zig").ForeignKey;
+    const ForeignKeyAction = @import("../storage/schema.zig").ForeignKeyAction;
+
     var columns = try c.persistent_allocator.alloc(Column, stmt.columns.len);
     for (stmt.columns, 0..) |col_def, i| {
         const owned_name = try c.persistent_allocator.dupe(u8, col_def.name);
+
+        var fk: ?ForeignKey = null;
+        if (col_def.foreign_key) |fk_def| {
+            fk = ForeignKey{
+                .ref_table = try c.persistent_allocator.dupe(u8, fk_def.ref_table),
+                .ref_column = try c.persistent_allocator.dupe(u8, fk_def.ref_column),
+                .on_delete = switch (fk_def.on_delete) {
+                    .no_action => ForeignKeyAction.no_action,
+                    .cascade => ForeignKeyAction.cascade,
+                    .set_null => ForeignKeyAction.set_null,
+                    .set_default => ForeignKeyAction.set_default,
+                    .restrict => ForeignKeyAction.restrict,
+                },
+                .on_update = switch (fk_def.on_update) {
+                    .no_action => ForeignKeyAction.no_action,
+                    .cascade => ForeignKeyAction.cascade,
+                    .set_null => ForeignKeyAction.set_null,
+                    .set_default => ForeignKeyAction.set_default,
+                    .restrict => ForeignKeyAction.restrict,
+                },
+            };
+        }
+
         columns[i] = Column{
             .name = owned_name,
             .type = map_column_type(col_def.type_name),
@@ -19,6 +45,7 @@ pub fn compile_create_table(c: *Compiler, stmt: CreateTableStatement) !void {
             .not_null = col_def.not_null,
             .check = if (col_def.check) |chk| try c.persistent_allocator.dupe(u8, chk) else null,
             .unique = col_def.unique,
+            .foreign_key = fk,
         };
     }
 
