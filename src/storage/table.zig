@@ -75,6 +75,7 @@ pub const Database = struct {
     tables: std.StringHashMap(*Table),
     indexes: std.StringHashMap(*schema_mod.IndexDef),
     index_btrees: std.StringHashMap(*IndexBtree),
+    views: std.StringHashMap(*schema_mod.ViewDef),
     auto_increment: std.StringHashMap(i64),
     next_page: u32,
     allocator: std.mem.Allocator,
@@ -105,6 +106,7 @@ pub const Database = struct {
             .tables = std.StringHashMap(*Table).init(allocator),
             .indexes = std.StringHashMap(*schema_mod.IndexDef).init(allocator),
             .index_btrees = std.StringHashMap(*IndexBtree).init(allocator),
+            .views = std.StringHashMap(*schema_mod.ViewDef).init(allocator),
             .auto_increment = std.StringHashMap(i64).init(allocator),
             .next_page = 2,
             .allocator = allocator,
@@ -351,6 +353,39 @@ pub const Database = struct {
         self.allocator.free(kv.key);
         try self.save_catalog();
         print("[DB] Dropped index '{s}'\n", .{name});
+    }
+
+    pub fn create_view(self: *Database, name: []const u8, sql: []const u8) !void {
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+
+        if (self.views.contains(owned_name)) {
+            self.allocator.free(owned_name);
+            return StorageError.ViewAlreadyExists;
+        }
+
+        const view_def = try self.allocator.create(schema_mod.ViewDef);
+        view_def.* = schema_mod.ViewDef{
+            .name = owned_name,
+            .sql = try self.allocator.dupe(u8, sql),
+        };
+
+        try self.views.put(owned_name, view_def);
+        print("[DB] Created view '{s}'\n", .{name});
+    }
+
+    pub fn get_view(self: *Database, name: []const u8) !*schema_mod.ViewDef {
+        return self.views.get(name) orelse StorageError.ViewNotFound;
+    }
+
+    pub fn drop_view(self: *Database, name: []const u8) !void {
+        const kv = self.views.fetchRemove(name) orelse return StorageError.ViewNotFound;
+        const view_def = kv.value;
+
+        self.allocator.free(view_def.sql);
+        self.allocator.destroy(view_def);
+        self.allocator.free(kv.key);
+        print("[DB] Dropped view '{s}'\n", .{name});
     }
 
     pub fn insert_into_indexes(self: *Database, table_name: []const u8, rowid: u32, row: *const DynamicRow) !void {
@@ -628,6 +663,15 @@ pub const Database = struct {
             self.allocator.destroy(entry.value_ptr.*);
         }
         self.index_btrees.deinit();
+
+        var view_iter = self.views.iterator();
+        while (view_iter.next()) |entry| {
+            const view_def = entry.value_ptr.*;
+            self.allocator.free(view_def.sql);
+            self.allocator.destroy(view_def);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.views.deinit();
     }
 
     pub fn debug(self: *Database) void {

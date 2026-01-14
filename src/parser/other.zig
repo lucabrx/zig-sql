@@ -68,6 +68,7 @@ pub fn parse_update(self: *Parser) ParserError!ast.UpdateStatement {
 pub const DropResult = union(enum) {
     table: ast.DropTableStatement,
     index: ast.DropIndexStatement,
+    view: ast.DropViewStatement,
 };
 
 pub fn parse_drop(self: *Parser) ParserError!DropResult {
@@ -75,6 +76,10 @@ pub fn parse_drop(self: *Parser) ParserError!DropResult {
 
     if (self.current.type == token.TokenType.index) {
         return DropResult{ .index = try parse_drop_index(self) };
+    }
+
+    if (self.current.type == token.TokenType.view) {
+        return DropResult{ .view = try parse_drop_view(self) };
     }
 
     if (self.current.type != token.TokenType.table) {
@@ -131,6 +136,34 @@ fn parse_drop_index(self: *Parser) ParserError!ast.DropIndexStatement {
         return error.ExpectedIdentifier;
     }
     stmt.index_name = self.current.literal;
+    self.advance();
+
+    if (self.current.type == token.TokenType.semicolon) {
+        self.advance();
+    }
+
+    return stmt.*;
+}
+
+fn parse_drop_view(self: *Parser) ParserError!ast.DropViewStatement {
+    const stmt = self.allocator.create(ast.DropViewStatement) catch return error.OutOfMemory;
+    stmt.if_exists = false;
+
+    self.advance();
+
+    if (self.current.type == token.TokenType.@"if") {
+        self.advance();
+        if (self.current.type == token.TokenType.exists) {
+            stmt.if_exists = true;
+            self.advance();
+        }
+    }
+
+    if (self.current.type != token.TokenType.ident) {
+        self.addError("Expected view name, got '{s}'", .{@tagName(self.current.type)});
+        return error.ExpectedIdentifier;
+    }
+    stmt.name = self.current.literal;
     self.advance();
 
     if (self.current.type == token.TokenType.semicolon) {

@@ -3,4 +3,5 @@ pub const CompilerError = error{
     TableNotFound,
     ColumnNotFound,
     OutOfMemory,
+    ViewNotSupported,
 };

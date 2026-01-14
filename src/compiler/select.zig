@@ -157,7 +157,13 @@ fn analyze_aggregates(c: *Compiler, cols: []const ast.SelectColumn, schema: *con
 }
 
 fn compile_simple_select(c: *Compiler, stmt: SelectStatement) !void {
-    const table = c.db.get_table(stmt.from[0].name) catch return CompilerError.TableNotFound;
+    const table = c.db.get_table(stmt.from[0].name) catch {
+        if (c.db.get_view(stmt.from[0].name)) |view_def| {
+            _ = view_def;
+            return CompilerError.ViewNotSupported;
+        } else |_| {}
+        return CompilerError.TableNotFound;
+    };
     const schema = table.schema;
 
     const output_cols = try resolve_select_columns(c, stmt.columns, schema);

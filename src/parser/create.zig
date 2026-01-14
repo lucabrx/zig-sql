@@ -3,10 +3,12 @@ const ast = @import("ast.zig");
 const token = @import("../lexer/token.zig");
 const Parser = @import("parser.zig").Parser;
 const ParseError = @import("parser.zig").ParseError;
+const select = @import("select.zig");
 
 pub const CreateResult = union(enum) {
     table: ast.CreateTableStatement,
     index: ast.CreateIndexStatement,
+    view: ast.CreateViewStatement,
 };
 
 pub fn parse_create(self: *Parser) ParseError!CreateResult {
@@ -20,6 +22,10 @@ pub fn parse_create(self: *Parser) ParseError!CreateResult {
 
     if (self.current.type == token.TokenType.index) {
         return CreateResult{ .index = try parse_create_index(self, is_unique) };
+    }
+
+    if (self.current.type == token.TokenType.view) {
+        return CreateResult{ .view = try parse_create_view(self) };
     }
 
     if (self.current.type != token.TokenType.table) {
@@ -109,6 +115,39 @@ fn parse_create_index(self: *Parser, is_unique: bool) ParseError!ast.CreateIndex
         .table = table_name,
         .columns = columns.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
         .unique = is_unique,
+    };
+}
+
+fn parse_create_view(self: *Parser) ParseError!ast.CreateViewStatement {
+    self.advance();
+
+    if (self.current.type != token.TokenType.ident) {
+        self.addError("Expected view name, got '{s}'", .{@tagName(self.current.type)});
+        return error.ExpectedIdentifier;
+    }
+    const view_name = self.current.literal;
+    self.advance();
+
+    if (self.current.type != token.TokenType.as) {
+        self.addError("Expected AS after view name", .{});
+        return error.ExpectedAs;
+    }
+    self.advance();
+
+    if (self.current.type != token.TokenType.select) {
+        self.addError("Expected SELECT after AS", .{});
+        return error.UnexpectedToken;
+    }
+
+    const select_stmt = try select.parse_select(self);
+
+    if (self.current.type == token.TokenType.semicolon) {
+        self.advance();
+    }
+
+    return ast.CreateViewStatement{
+        .name = view_name,
+        .select = select_stmt,
     };
 }
 

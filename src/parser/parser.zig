@@ -126,6 +126,7 @@ pub const Parser = struct {
                 return switch (result) {
                     .table => |stmt| ast.Statement{ .create_table_stmt = stmt },
                     .index => |stmt| ast.Statement{ .create_index_stmt = stmt },
+                    .view => |stmt| ast.Statement{ .create_view_stmt = stmt },
                 };
             },
             token.TokenType.insert => {
@@ -160,6 +161,7 @@ pub const Parser = struct {
                 return switch (result) {
                     .table => |stmt| ast.Statement{ .drop_table_stmt = stmt },
                     .index => |stmt| ast.Statement{ .drop_index_stmt = stmt },
+                    .view => |stmt| ast.Statement{ .drop_view_stmt = stmt },
                 };
             },
             token.TokenType.begin => {

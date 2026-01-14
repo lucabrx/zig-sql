@@ -88,3 +88,8 @@ pub const IndexDef = struct {
     root_page: u32,
     column_indices: []usize,
 };
+
+pub const ViewDef = struct {
+    name: []const u8,
+    sql: []const u8,
+};

@@ -132,6 +132,7 @@ pub const TokenType = enum {
     cascade,
     restrict,
     action,
+    view,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -262,6 +263,7 @@ pub const TokenType = enum {
             .cascade => "CASCADE",
             .restrict => "RESTRICT",
             .action => "ACTION",
+            .view => "VIEW",
         };
     }
 };
@@ -379,6 +381,7 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "CASCADE", .cascade },
     .{ "RESTRICT", .restrict },
     .{ "ACTION", .action },
+    .{ "VIEW", .view },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

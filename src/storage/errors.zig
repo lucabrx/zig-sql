@@ -19,4 +19,6 @@ pub const StorageError = error{
     TableNoPrimaryKey,
     InvalidDatabaseFile,
     InvalidDefaultValue,
+    ViewNotFound,
+    ViewAlreadyExists,
 };

@@ -299,6 +299,8 @@ pub const VM = struct {
             .alter_rename_column => try self.op_alter_rename_column(inst),
             .func_call => try self.op_func_call(inst),
             .vacuum => try self.op_vacuum(),
+            .create_view => try self.op_create_view(inst),
+            .drop_view => try self.op_drop_view(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -1995,6 +1997,24 @@ pub const VM = struct {
     fn op_vacuum(self: *VM) !void {
         const reclaimed = try self.db.vacuum();
         print("[VM] VACUUM completed: {} cells compacted\n", .{reclaimed});
+        self.pc += 1;
+    }
+
+    fn op_create_view(self: *VM, inst: Instruction) !void {
+        const view_name = inst.p4;
+        if (inst.p5) |ptr| {
+            const ast = @import("../parser/ast.zig");
+            const view_stmt: *ast.CreateViewStatement = @ptrCast(@alignCast(ptr));
+            _ = view_stmt;
+            try self.db.create_view(view_name, view_name);
+        }
+        self.pc += 1;
+    }
+
+    fn op_drop_view(self: *VM, inst: Instruction) !void {
+        self.db.drop_view(inst.p4) catch |err| {
+            if (inst.p1 == 0) return err;
+        };
         self.pc += 1;
     }
 };

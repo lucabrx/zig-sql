@@ -133,6 +133,17 @@ pub fn compile_alter_table(c: *Compiler, stmt: ast.AlterTableStatement) !void {
     }
 }
 
+pub fn compile_create_view(c: *Compiler, stmt: ast.CreateViewStatement) !void {
+    const view_ptr = try c.persistent_allocator.create(ast.CreateViewStatement);
+    view_ptr.* = stmt;
+    _ = try c.emit(.create_view, 0, 0, 0, stmt.name, @ptrCast(view_ptr));
+}
+
+pub fn compile_drop_view(c: *Compiler, stmt: ast.DropViewStatement) !void {
+    const if_exists: i32 = if (stmt.if_exists) 1 else 0;
+    _ = try c.emit(.drop_view, if_exists, 0, 0, stmt.name, null);
+}
+
 test "compile create table" {
     const allocator = std.testing.allocator;
     const Pager = @import("../storage/pager.zig").Pager;

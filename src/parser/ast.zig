@@ -113,6 +113,8 @@ pub const Statement = union(enum) {
     union_stmt: UnionStatement,
     alter_table_stmt: AlterTableStatement,
     vacuum_stmt: VacuumStatement,
+    create_view_stmt: CreateViewStatement,
+    drop_view_stmt: DropViewStatement,
 };
 
 pub const VacuumStatement = struct {};
@@ -273,6 +275,16 @@ pub const CreateIndexStatement = struct {
     table: []const u8,
     columns: []const []const u8,
     unique: bool,
+};
+
+pub const CreateViewStatement = struct {
+    name: []const u8,
+    select: SelectStatement,
+};
+
+pub const DropViewStatement = struct {
+    name: []const u8,
+    if_exists: bool,
 };
 
 // --- Expressions ---

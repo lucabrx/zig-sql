@@ -472,6 +472,16 @@ pub const REPL = struct {
             .vacuum_stmt => {
                 try self.writer.writeAll("VACUUM\n");
             },
+            .create_view_stmt => |view_stmt| {
+                try self.writer.print("CREATE VIEW {s}\n", .{view_stmt.name});
+            },
+            .drop_view_stmt => |drop_stmt| {
+                try self.writer.print("DROP VIEW", .{});
+                if (drop_stmt.if_exists) {
+                    try self.writer.writeAll(" IF EXISTS");
+                }
+                try self.writer.print(" {s}\n", .{drop_stmt.name});
+            },
         }
     }
 
