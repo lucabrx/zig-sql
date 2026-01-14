@@ -24,6 +24,7 @@ pub const ParseError = error{
     ExpectedNull,
     ExpectedThen,
     ExpectedEnd,
+    ExpectedAs,
     InvalidInteger,
     InvalidFloat,
     InvalidIntegerLiteral,

@@ -1670,6 +1670,165 @@ pub const VM = struct {
             } else {
                 self.registers[dest_reg] = RegisterValue.init_null();
             }
+        } else if (std.mem.eql(u8, upper_name, "TYPEOF")) {
+            if (arg_count >= 1) {
+                const arg = self.registers[arg_start];
+                const type_str = switch (arg.type) {
+                    .integer => "integer",
+                    .real => "real",
+                    .text => "text",
+                    .blob => "blob",
+                    .boolean => "integer",
+                    .null => "null",
+                };
+                self.registers[dest_reg] = RegisterValue.init_text(type_str);
+            } else {
+                self.registers[dest_reg] = RegisterValue.init_null();
+            }
+        } else if (std.mem.eql(u8, upper_name, "CAST")) {
+            if (arg_count >= 2) {
+                const val = self.registers[arg_start];
+                const type_arg = self.registers[arg_start + 1];
+                if (type_arg.type == .text) {
+                    var type_buf: [16]u8 = undefined;
+                    const type_len = @min(type_arg.text.len, type_buf.len);
+                    const target_type = std.ascii.upperString(type_buf[0..type_len], type_arg.text[0..type_len]);
+
+                    if (std.mem.eql(u8, target_type, "INTEGER") or std.mem.eql(u8, target_type, "INT")) {
+                        if (val.type == .integer) {
+                            self.registers[dest_reg] = val;
+                        } else if (val.type == .real) {
+                            self.registers[dest_reg] = RegisterValue.init_integer(@intFromFloat(val.real));
+                        } else if (val.type == .text) {
+                            const parsed = std.fmt.parseInt(i64, val.text, 10) catch 0;
+                            self.registers[dest_reg] = RegisterValue.init_integer(parsed);
+                        } else if (val.type == .boolean) {
+                            self.registers[dest_reg] = RegisterValue.init_integer(if (val.boolean) 1 else 0);
+                        } else {
+                            self.registers[dest_reg] = RegisterValue.init_null();
+                        }
+                    } else if (std.mem.eql(u8, target_type, "REAL") or std.mem.eql(u8, target_type, "FLOAT")) {
+                        if (val.type == .real) {
+                            self.registers[dest_reg] = val;
+                        } else if (val.type == .integer) {
+                            self.registers[dest_reg] = RegisterValue.init_real(@floatFromInt(val.integer));
+                        } else if (val.type == .text) {
+                            const parsed = std.fmt.parseFloat(f64, val.text) catch 0.0;
+                            self.registers[dest_reg] = RegisterValue.init_real(parsed);
+                        } else {
+                            self.registers[dest_reg] = RegisterValue.init_null();
+                        }
+                    } else if (std.mem.eql(u8, target_type, "TEXT")) {
+                        if (val.type == .text) {
+                            self.registers[dest_reg] = val;
+                        } else if (val.type == .integer) {
+                            const buf = std.fmt.allocPrint(self.allocator, "{d}", .{val.integer}) catch {
+                                self.registers[dest_reg] = RegisterValue.init_null();
+                                self.pc += 1;
+                                return;
+                            };
+                            self.registers[dest_reg] = RegisterValue.init_text(buf);
+                        } else if (val.type == .real) {
+                            const buf = std.fmt.allocPrint(self.allocator, "{d:.2}", .{val.real}) catch {
+                                self.registers[dest_reg] = RegisterValue.init_null();
+                                self.pc += 1;
+                                return;
+                            };
+                            self.registers[dest_reg] = RegisterValue.init_text(buf);
+                        } else {
+                            self.registers[dest_reg] = RegisterValue.init_null();
+                        }
+                    } else {
+                        self.registers[dest_reg] = val;
+                    }
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            } else {
+                self.registers[dest_reg] = RegisterValue.init_null();
+            }
+        } else if (std.mem.eql(u8, upper_name, "STRFTIME")) {
+            if (arg_count >= 2) {
+                const fmt_arg = self.registers[arg_start];
+                const val_arg = self.registers[arg_start + 1];
+                if (fmt_arg.type == .text and val_arg.type == .integer) {
+                    const timestamp: i64 = val_arg.integer;
+                    const fmt = fmt_arg.text;
+                    var result = std.ArrayList(u8){};
+
+                    const days_since_epoch = @divFloor(timestamp, 86400);
+                    var year: i64 = 1970;
+                    var remaining_days = days_since_epoch;
+
+                    while (true) {
+                        const days_in_year: i64 = if (@mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0)) 366 else 365;
+                        if (remaining_days < days_in_year) break;
+                        remaining_days -= days_in_year;
+                        year += 1;
+                    }
+
+                    const is_leap = @mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0);
+                    const days_in_months = [_]i64{ 31, if (is_leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+                    var month: u32 = 1;
+                    for (days_in_months) |dim| {
+                        if (remaining_days < dim) break;
+                        remaining_days -= dim;
+                        month += 1;
+                    }
+                    const day: u32 = @intCast(remaining_days + 1);
+
+                    const seconds_in_day: u32 = @intCast(@mod(timestamp, 86400));
+                    const hour: u32 = seconds_in_day / 3600;
+                    const minute: u32 = (seconds_in_day % 3600) / 60;
+                    const second: u32 = seconds_in_day % 60;
+
+                    var i: usize = 0;
+                    while (i < fmt.len) {
+                        if (fmt[i] == '%' and i + 1 < fmt.len) {
+                            const spec = fmt[i + 1];
+                            switch (spec) {
+                                'Y' => {
+                                    const buf = std.fmt.allocPrint(self.allocator, "{d}", .{year}) catch break;
+                                    result.appendSlice(self.allocator, buf) catch break;
+                                },
+                                'm' => {
+                                    const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{month}) catch break;
+                                    result.appendSlice(self.allocator, buf) catch break;
+                                },
+                                'd' => {
+                                    const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{day}) catch break;
+                                    result.appendSlice(self.allocator, buf) catch break;
+                                },
+                                'H' => {
+                                    const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{hour}) catch break;
+                                    result.appendSlice(self.allocator, buf) catch break;
+                                },
+                                'M' => {
+                                    const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{minute}) catch break;
+                                    result.appendSlice(self.allocator, buf) catch break;
+                                },
+                                'S' => {
+                                    const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{second}) catch break;
+                                    result.appendSlice(self.allocator, buf) catch break;
+                                },
+                                else => {
+                                    result.append(self.allocator, '%') catch break;
+                                    result.append(self.allocator, spec) catch break;
+                                },
+                            }
+                            i += 2;
+                        } else {
+                            result.append(self.allocator, fmt[i]) catch break;
+                            i += 1;
+                        }
+                    }
+                    self.registers[dest_reg] = RegisterValue.init_text(result.toOwnedSlice(self.allocator) catch "");
+                } else {
+                    self.registers[dest_reg] = RegisterValue.init_null();
+                }
+            } else {
+                self.registers[dest_reg] = RegisterValue.init_null();
+            }
         } else {
             self.registers[dest_reg] = RegisterValue.init_null();
         }

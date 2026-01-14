@@ -437,8 +437,11 @@ pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
         token.TokenType.case => {
             return try parse_case(self);
         },
-        token.TokenType.upper, token.TokenType.lower, token.TokenType.length, token.TokenType.substr, token.TokenType.concat, token.TokenType.trim, token.TokenType.abs, token.TokenType.round, token.TokenType.floor, token.TokenType.ceil, token.TokenType.coalesce, token.TokenType.nullif, token.TokenType.ifnull => {
+        token.TokenType.upper, token.TokenType.lower, token.TokenType.length, token.TokenType.substr, token.TokenType.concat, token.TokenType.trim, token.TokenType.abs, token.TokenType.round, token.TokenType.floor, token.TokenType.ceil, token.TokenType.coalesce, token.TokenType.nullif, token.TokenType.ifnull, token.TokenType.typeof, token.TokenType.strftime => {
             return try parse_function_call(self);
+        },
+        token.TokenType.cast => {
+            return try parse_cast(self);
         },
         else => {
             self.addError("Unexpected token in expression: '{s}'", .{@tagName(self.current.type)});
@@ -562,6 +565,41 @@ fn parse_function_call(self: *Parser) ParseError!ast.Expression {
     func.* = ast.FunctionCall{
         .name = name,
         .args = args.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
+    };
+    return ast.Expression{ .function_call = func };
+}
+
+fn parse_cast(self: *Parser) ParseError!ast.Expression {
+    self.advance();
+
+    if (!self.expect(token.TokenType.lparen)) {
+        return error.ExpectedOpenParen;
+    }
+
+    const expr = try parse_or_expression(self);
+
+    if (self.current.type != token.TokenType.as) {
+        return error.ExpectedAs;
+    }
+    self.advance();
+
+    const type_name = self.current.literal;
+    self.advance();
+
+    if (!self.expect(token.TokenType.rparen)) {
+        return error.ExpectedCloseParen;
+    }
+
+    const type_expr = ast.Expression{ .string_literal = ast.StringLiteral{ .value = type_name } };
+
+    var args = self.allocator.alloc(ast.Expression, 2) catch return error.OutOfMemory;
+    args[0] = expr;
+    args[1] = type_expr;
+
+    const func = self.allocator.create(ast.FunctionCall) catch return error.OutOfMemory;
+    func.* = ast.FunctionCall{
+        .name = "CAST",
+        .args = args,
     };
     return ast.Expression{ .function_call = func };
 }

@@ -124,6 +124,9 @@ pub const TokenType = enum {
     coalesce,
     nullif,
     ifnull,
+    typeof,
+    cast,
+    strftime,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -246,6 +249,9 @@ pub const TokenType = enum {
             .coalesce => "COALESCE",
             .nullif => "NULLIF",
             .ifnull => "IFNULL",
+            .typeof => "TYPEOF",
+            .cast => "CAST",
+            .strftime => "STRFTIME",
         };
     }
 };
@@ -355,6 +361,9 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "COALESCE", .coalesce },
     .{ "NULLIF", .nullif },
     .{ "IFNULL", .ifnull },
+    .{ "TYPEOF", .typeof },
+    .{ "CAST", .cast },
+    .{ "STRFTIME", .strftime },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {
