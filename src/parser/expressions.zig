@@ -202,12 +202,23 @@ pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
             return expr;
         },
         token.TokenType.ident => {
+            var name = self.current.literal;
+            self.advance();
+
+            if (self.current.type == token.TokenType.dot) {
+                self.advance();
+                if (self.current.type == token.TokenType.ident) {
+                    const qualified_name = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ name, self.current.literal }) catch return error.OutOfMemory;
+                    name = qualified_name;
+                    self.advance();
+                }
+            }
+
             const expr = ast.Expression{
                 .identifier = ast.Identifier{
-                    .name = self.current.literal,
+                    .name = name,
                 },
             };
-            self.advance();
             return expr;
         },
         token.TokenType.asterisk => {

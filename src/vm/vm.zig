@@ -207,6 +207,7 @@ pub const VM = struct {
             .txn_rollback_to => try self.op_txn_rollback_to(inst),
             .txn_set_isolation => try self.op_txn_set_isolation(inst),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
+            .@"and", .@"or" => try self.op_logical(inst),
             .delete => try self.op_delete(inst),
             else => return VmErrors.InvalidOp,
         }
@@ -531,6 +532,24 @@ pub const VM = struct {
                 else => false,
             };
         }
+        self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn op_logical(self: *VM, inst: Instruction) !void {
+        const left = self.registers[@intCast(inst.p1)];
+        const right = self.registers[@intCast(inst.p2)];
+        const dest_reg: usize = @intCast(inst.p3);
+
+        const left_bool = left.integer != 0;
+        const right_bool = right.integer != 0;
+
+        const result: bool = switch (inst.op) {
+            .@"and" => left_bool and right_bool,
+            .@"or" => left_bool or right_bool,
+            else => false,
+        };
+
         self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
         self.pc += 1;
     }

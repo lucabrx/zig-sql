@@ -353,6 +353,18 @@ pub const REPL = struct {
                     }
                 }
                 try self.writer.print("From Table: {s}\n", .{select_stmt.from});
+                if (select_stmt.joins.len > 0) {
+                    try self.writer.writeAll("Joins:\n");
+                    for (select_stmt.joins) |join| {
+                        const join_type_str = switch (join.join_type) {
+                            .inner => "INNER",
+                            .left => "LEFT",
+                            .right => "RIGHT",
+                            .cross => "CROSS",
+                        };
+                        try self.writer.print("  - {s} JOIN {s}\n", .{ join_type_str, join.table });
+                    }
+                }
             },
             .update_stmt => |update_stmt| {
                 try self.writer.print("UPDATE {s}\n", .{update_stmt.table});

@@ -1,37 +1,32 @@
 const std = @import("std");
 
 pub const TokenType = enum {
-    // Special tokens
     illegal,
     eof,
-    ws, // whitespace (skipped)
+    ws,
 
-    // Literals
-    ident, // column_name, table_name
-    int, // 123
-    float, // 123.45
-    string, // 'hello'
+    ident,
+    int,
+    float,
+    string,
 
-    // Operators
-    eq, // =
-    neq, // != or <>
-    lt, // <
-    gt, // >
-    lte, // <=
-    gte, // >=
-    plus, // +
-    minus, // -
-    asterisk, // *
-    slash, // /
+    eq,
+    neq,
+    lt,
+    gt,
+    lte,
+    gte,
+    plus,
+    minus,
+    asterisk,
+    slash,
 
-    // Delimiters
-    comma, // ,
-    semicolon, // ;
-    lparen, // (
-    rparen, // )
-    dot, // .
+    comma,
+    semicolon,
+    lparen,
+    rparen,
+    dot,
 
-    // Keywords
     select,
     from,
     where,
@@ -85,6 +80,12 @@ pub const TokenType = enum {
     committed,
     repeatable,
     serializable,
+    join,
+    inner,
+    left,
+    right,
+    cross,
+    outer,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -163,6 +164,12 @@ pub const TokenType = enum {
             .committed => "COMMITTED",
             .repeatable => "REPEATABLE",
             .serializable => "SERIALIZABLE",
+            .join => "JOIN",
+            .inner => "INNER",
+            .left => "LEFT",
+            .right => "RIGHT",
+            .cross => "CROSS",
+            .outer => "OUTER",
         };
     }
 };
@@ -228,6 +235,12 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "COMMITTED", .committed },
     .{ "REPEATABLE", .repeatable },
     .{ "SERIALIZABLE", .serializable },
+    .{ "JOIN", .join },
+    .{ "INNER", .inner },
+    .{ "LEFT", .left },
+    .{ "RIGHT", .right },
+    .{ "CROSS", .cross },
+    .{ "OUTER", .outer },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

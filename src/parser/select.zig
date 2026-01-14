@@ -10,6 +10,7 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
     stmt.* = ast.SelectStatement{
         .columns = try parse_select_columns(self),
         .from = "",
+        .joins = &[_]ast.JoinClause{},
         .where = null,
         .order_by = &[_]ast.OrderBy{},
         .limit = null,
@@ -26,6 +27,8 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
     }
     stmt.from = self.current.literal;
     self.advance();
+
+    stmt.joins = try parse_joins(self);
 
     if (self.current.type == token.TokenType.where) {
         self.advance();
@@ -73,6 +76,81 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
     }
 
     return stmt.*;
+}
+
+fn parse_joins(self: *Parser) ParseError![]ast.JoinClause {
+    var joins = std.ArrayList(ast.JoinClause){};
+    defer joins.deinit(self.allocator);
+
+    while (true) {
+        var join_type: ?ast.JoinType = null;
+
+        if (self.current.type == token.TokenType.inner) {
+            join_type = .inner;
+            self.advance();
+            if (self.current.type != token.TokenType.join) {
+                self.addError("Expected JOIN after INNER", .{});
+                return error.UnexpectedToken;
+            }
+            self.advance();
+        } else if (self.current.type == token.TokenType.left) {
+            join_type = .left;
+            self.advance();
+            if (self.current.type == token.TokenType.outer) {
+                self.advance();
+            }
+            if (self.current.type != token.TokenType.join) {
+                self.addError("Expected JOIN after LEFT", .{});
+                return error.UnexpectedToken;
+            }
+            self.advance();
+        } else if (self.current.type == token.TokenType.right) {
+            join_type = .right;
+            self.advance();
+            if (self.current.type == token.TokenType.outer) {
+                self.advance();
+            }
+            if (self.current.type != token.TokenType.join) {
+                self.addError("Expected JOIN after RIGHT", .{});
+                return error.UnexpectedToken;
+            }
+            self.advance();
+        } else if (self.current.type == token.TokenType.cross) {
+            join_type = .cross;
+            self.advance();
+            if (self.current.type != token.TokenType.join) {
+                self.addError("Expected JOIN after CROSS", .{});
+                return error.UnexpectedToken;
+            }
+            self.advance();
+        } else if (self.current.type == token.TokenType.join) {
+            join_type = .inner;
+            self.advance();
+        } else {
+            break;
+        }
+
+        if (self.current.type != token.TokenType.ident) {
+            self.addError("Expected table name after JOIN", .{});
+            return error.ExpectedIdentifier;
+        }
+        const table_name = self.current.literal;
+        self.advance();
+
+        var condition: ?ast.Expression = null;
+        if (join_type != .cross and self.current.type == token.TokenType.on) {
+            self.advance();
+            condition = try self.parse_or_expression();
+        }
+
+        try joins.append(self.allocator, ast.JoinClause{
+            .join_type = join_type.?,
+            .table = table_name,
+            .condition = condition,
+        });
+    }
+
+    return joins.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
 }
 
 fn parse_select_columns(self: *Parser) ParseError![]ast.Expression {
@@ -194,5 +272,48 @@ test "parse select statement" {
         try std.testing.expectEqualStrings("products", stmt.from);
         try std.testing.expectEqual(10, stmt.limit.?);
         try std.testing.expectEqual(20, stmt.offset.?);
+    }
+}
+
+test "parse join statements" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    {
+        const input = "SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id;";
+        var l = lexer.Lexer.init(input);
+        const tokens = try l.tokenize(allocator);
+
+        var p = Parser.init(tokens, allocator);
+        const stmt = try parse_select(&p);
+
+        try std.testing.expectEqualStrings("users", stmt.from);
+        try std.testing.expectEqual(1, stmt.joins.len);
+        try std.testing.expectEqual(ast.JoinType.inner, stmt.joins[0].join_type);
+        try std.testing.expectEqualStrings("orders", stmt.joins[0].table);
+    }
+
+    {
+        const input = "SELECT * FROM users LEFT JOIN orders ON users.id = orders.user_id;";
+        var l = lexer.Lexer.init(input);
+        const tokens = try l.tokenize(allocator);
+
+        var p = Parser.init(tokens, allocator);
+        const stmt = try parse_select(&p);
+
+        try std.testing.expectEqual(ast.JoinType.left, stmt.joins[0].join_type);
+    }
+
+    {
+        const input = "SELECT * FROM users CROSS JOIN products;";
+        var l = lexer.Lexer.init(input);
+        const tokens = try l.tokenize(allocator);
+
+        var p = Parser.init(tokens, allocator);
+        const stmt = try parse_select(&p);
+
+        try std.testing.expectEqual(ast.JoinType.cross, stmt.joins[0].join_type);
+        try std.testing.expect(stmt.joins[0].condition == null);
     }
 }

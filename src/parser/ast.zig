@@ -38,11 +38,25 @@ pub const Node = union(enum) {
 
 pub const SelectStatement = struct {
     columns: []const Expression,
-    from: []const u8, // string
-    where: ?Expression, // Optional expression
+    from: []const u8,
+    joins: []const JoinClause,
+    where: ?Expression,
     order_by: []const OrderBy,
-    limit: ?i64, // *int becomes ?i64 (nullable int)
-    offset: ?i64, // *int becomes ?i64
+    limit: ?i64,
+    offset: ?i64,
+};
+
+pub const JoinType = enum {
+    inner,
+    left,
+    right,
+    cross,
+};
+
+pub const JoinClause = struct {
+    join_type: JoinType,
+    table: []const u8,
+    condition: ?Expression,
 };
 
 pub const OrderBy = struct {
@@ -180,8 +194,9 @@ test "usage example" {
         .select_stmt = SelectStatement{
             .columns = columns.items,
             .from = "users",
+            .joins = &[_]JoinClause{},
             .where = Expression{ .binary_expression = bin_expr },
-            .order_by = &[_]OrderBy{}, // empty slice
+            .order_by = &[_]OrderBy{},
             .limit = 10,
             .offset = null,
         },
