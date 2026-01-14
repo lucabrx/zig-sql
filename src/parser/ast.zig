@@ -17,6 +17,18 @@ pub const Expression = union(enum) {
     in_subquery: *InSubqueryExpression,
     like: *LikeExpression,
     is_null: *IsNullExpression,
+    case_expr: *CaseExpression,
+};
+
+pub const WhenClause = struct {
+    condition: Expression,
+    result: Expression,
+};
+
+pub const CaseExpression = struct {
+    operand: ?Expression,
+    when_clauses: []const WhenClause,
+    else_result: ?Expression,
 };
 
 pub const BetweenExpression = struct {

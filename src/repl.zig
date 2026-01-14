@@ -469,6 +469,7 @@ pub const REPL = struct {
             .in_subquery => try self.writer.writeAll("IN (SUBQUERY)"),
             .like => try self.writer.writeAll("LIKE ..."),
             .is_null => try self.writer.writeAll("IS NULL"),
+            .case_expr => try self.writer.writeAll("CASE ... END"),
         }
     }
 };

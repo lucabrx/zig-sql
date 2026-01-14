@@ -83,6 +83,7 @@ pub const Opcode = enum(u8) {
     in_subquery,
     like,
     is_null,
+    case_expr,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -143,6 +144,7 @@ pub const Opcode = enum(u8) {
             .in_subquery => "IN_SUBQUERY",
             .like => "LIKE",
             .is_null => "IS_NULL",
+            .case_expr => "CASE",
         };
     }
 };

@@ -398,6 +398,9 @@ pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
         token.TokenType.count, token.TokenType.sum, token.TokenType.avg, token.TokenType.min, token.TokenType.max => {
             return try parse_aggregate(self);
         },
+        token.TokenType.case => {
+            return try parse_case(self);
+        },
         else => {
             self.addError("Unexpected token in expression: '{s}'", .{@tagName(self.current.type)});
             return error.UnexpectedToken;
@@ -444,6 +447,51 @@ fn parse_aggregate(self: *Parser) ParseError!ast.Expression {
         .distinct = is_distinct,
     };
     return ast.Expression{ .aggregate = agg };
+}
+
+fn parse_case(self: *Parser) ParseError!ast.Expression {
+    self.advance();
+
+    var operand: ?ast.Expression = null;
+    if (self.current.type != token.TokenType.when) {
+        operand = try parse_or_expression(self);
+    }
+
+    var when_clauses = std.ArrayList(ast.WhenClause){};
+    defer when_clauses.deinit(self.allocator);
+
+    while (self.current.type == token.TokenType.when) {
+        self.advance();
+        const condition = try parse_or_expression(self);
+        if (self.current.type != token.TokenType.then) {
+            return error.ExpectedThen;
+        }
+        self.advance();
+        const result = try parse_or_expression(self);
+        try when_clauses.append(self.allocator, ast.WhenClause{
+            .condition = condition,
+            .result = result,
+        });
+    }
+
+    var else_result: ?ast.Expression = null;
+    if (self.current.type == token.TokenType.@"else") {
+        self.advance();
+        else_result = try parse_or_expression(self);
+    }
+
+    if (self.current.type != token.TokenType.end) {
+        return error.ExpectedEnd;
+    }
+    self.advance();
+
+    const case_expr = self.allocator.create(ast.CaseExpression) catch return error.OutOfMemory;
+    case_expr.* = ast.CaseExpression{
+        .operand = operand,
+        .when_clauses = when_clauses.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
+        .else_result = else_result,
+    };
+    return ast.Expression{ .case_expr = case_expr };
 }
 
 const lexer = @import("../lexer/lexer.zig");

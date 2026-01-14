@@ -286,6 +286,7 @@ pub const VM = struct {
             .in_subquery => try self.op_in_subquery(inst),
             .like => self.op_like(inst),
             .is_null => self.op_is_null(inst),
+            .case_expr => try self.op_case(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -828,6 +829,48 @@ pub const VM = struct {
 
         if (negated) result = !result;
         self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn op_case(self: *VM, inst: Instruction) !void {
+        const dest_reg: usize = @intCast(inst.p1);
+
+        if (inst.p5) |ptr| {
+            const ast = @import("../parser/ast.zig");
+            const case_expr: *ast.CaseExpression = @ptrCast(@alignCast(ptr));
+
+            var operand_val: ?RegisterValue = null;
+            if (case_expr.operand) |op| {
+                operand_val = self.eval_const_expr(op);
+            }
+
+            for (case_expr.when_clauses) |when| {
+                const cond_val = self.eval_const_expr(when.condition);
+                var matches = false;
+
+                if (operand_val) |op_val| {
+                    matches = self.values_equal(op_val, cond_val);
+                } else {
+                    matches = cond_val.type == .integer and cond_val.integer != 0;
+                    if (cond_val.type == .boolean) matches = cond_val.boolean;
+                }
+
+                if (matches) {
+                    self.registers[dest_reg] = self.eval_const_expr(when.result);
+                    self.pc += 1;
+                    return;
+                }
+            }
+
+            if (case_expr.else_result) |else_expr| {
+                self.registers[dest_reg] = self.eval_const_expr(else_expr);
+            } else {
+                self.registers[dest_reg] = RegisterValue.init_null();
+            }
+        } else {
+            self.registers[dest_reg] = RegisterValue.init_null();
+        }
+
         self.pc += 1;
     }
 

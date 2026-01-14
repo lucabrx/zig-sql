@@ -59,6 +59,9 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
         .is_null => |isn| {
             try compile_is_null(c, isn, dest_reg, schema);
         },
+        .case_expr => |case| {
+            try compile_case(c, case, dest_reg, schema);
+        },
     }
 }
 
@@ -187,4 +190,47 @@ fn get_schema_column_index(schema: *const Schema, name: []const u8) i32 {
         }
     }
     return 0;
+}
+
+fn compile_case(c: *Compiler, case: *ast.CaseExpression, dest_reg: i32, schema: ?*const Schema) CompileError!void {
+    var end_jumps = std.ArrayList(usize){};
+    defer end_jumps.deinit(c.allocator);
+
+    const operand_reg = if (case.operand) |op| blk: {
+        const reg = c.alloc_reg();
+        try compile_expression(c, op, reg, schema);
+        break :blk reg;
+    } else null;
+
+    for (case.when_clauses) |when| {
+        const cond_reg = c.alloc_reg();
+
+        if (operand_reg) |op_reg| {
+            const when_val_reg = c.alloc_reg();
+            try compile_expression(c, when.condition, when_val_reg, schema);
+            _ = try c.emit(.eq, op_reg, when_val_reg, cond_reg, "", null);
+        } else {
+            try compile_expression(c, when.condition, cond_reg, schema);
+        }
+
+        const skip_addr = try c.emit(.if_zero, cond_reg, 0, 0, "", null);
+
+        try compile_expression(c, when.result, dest_reg, schema);
+
+        const end_jump = try c.emit(.goto, 0, 0, 0, "", null);
+        try end_jumps.append(c.allocator, end_jump);
+
+        c.patch(skip_addr, @intCast(c.instructions.items.len));
+    }
+
+    if (case.else_result) |else_expr| {
+        try compile_expression(c, else_expr, dest_reg, schema);
+    } else {
+        _ = try c.emit(.null, dest_reg, 0, 0, "", null);
+    }
+
+    const end_addr: i32 = @intCast(c.instructions.items.len);
+    for (end_jumps.items) |jump_addr| {
+        c.instructions.items[jump_addr].p2 = end_addr;
+    }
 }
