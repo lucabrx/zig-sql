@@ -347,7 +347,6 @@ pub const VM = struct {
         const start_reg: usize = @intCast(inst.p2);
         const key: u32 = @intCast(self.registers[start_reg].integer);
 
-        // Build row from registers
         var username: []const u8 = "";
         var email: []const u8 = "";
         var active: bool = false;

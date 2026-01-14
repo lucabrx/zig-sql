@@ -6,7 +6,7 @@ pub const COL_ID_SIZE: usize = 4;
 pub const COL_USERNAME_SIZE: usize = 32;
 pub const COL_EMAIL_SIZE: usize = 255;
 pub const COL_ACTIVE_SIZE: usize = 1;
-pub const COL_CREATED_AT_SIZE: usize = 8; // i64 timestamp
+pub const COL_CREATED_AT_SIZE: usize = 8;
 pub const ROW_SIZE: usize = COL_ID_SIZE + COL_USERNAME_SIZE + COL_EMAIL_SIZE + COL_ACTIVE_SIZE + COL_CREATED_AT_SIZE;
 
 pub const PAGE_SIZE = @import("pager.zig").PAGE_SIZE;
@@ -16,7 +16,7 @@ pub const Row = struct {
     username: [COL_USERNAME_SIZE]u8,
     email: [COL_EMAIL_SIZE]u8,
     active: bool,
-    created_at: i64, // Unix timestamp for datetime
+    created_at: i64,
 
     pub fn init(id: u32, username: []const u8, email: []const u8) Row {
         return Row.initFull(id, username, email, false, 0);
