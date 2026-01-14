@@ -18,6 +18,7 @@ const storage = struct {
     const RowValue = row.RowValue;
     const node = @import("../storage/node.zig");
     const Transaction = @import("../storage/transaction.zig").Transaction;
+    const IsolationLevel = @import("../storage/transaction.zig").IsolationLevel;
 };
 
 const print = std.debug.print;
@@ -204,6 +205,7 @@ pub const VM = struct {
             .txn_savepoint => try self.op_txn_savepoint(inst),
             .txn_release => try self.op_txn_release(inst),
             .txn_rollback_to => try self.op_txn_rollback_to(inst),
+            .txn_set_isolation => try self.op_txn_set_isolation(inst),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .delete => try self.op_delete(inst),
             else => return VmErrors.InvalidOp,
@@ -452,6 +454,18 @@ pub const VM = struct {
 
     fn op_txn_rollback_to(self: *VM, inst: Instruction) !void {
         try self.db.transaction.rollback_to_savepoint(inst.p4);
+        self.pc += 1;
+    }
+
+    fn op_txn_set_isolation(self: *VM, inst: Instruction) !void {
+        const level: storage.IsolationLevel = switch (inst.p1) {
+            0 => .read_uncommitted,
+            1 => .read_committed,
+            2 => .repeatable_read,
+            3 => .serializable,
+            else => .read_committed,
+        };
+        try self.db.transaction.set_isolation_level(level);
         self.pc += 1;
     }
 

@@ -10,6 +10,22 @@ pub const TransactionState = enum {
     active,
 };
 
+pub const IsolationLevel = enum {
+    read_uncommitted,
+    read_committed,
+    repeatable_read,
+    serializable,
+
+    pub fn to_string(self: IsolationLevel) []const u8 {
+        return switch (self) {
+            .read_uncommitted => "READ UNCOMMITTED",
+            .read_committed => "READ COMMITTED",
+            .repeatable_read => "REPEATABLE READ",
+            .serializable => "SERIALIZABLE",
+        };
+    }
+};
+
 const Savepoint = struct {
     name: []const u8,
     shadow_pages: std.AutoHashMap(u32, *[PAGE_SIZE]u8),
@@ -19,7 +35,9 @@ pub const Transaction = struct {
     allocator: std.mem.Allocator,
     pager: *Pager,
     state: TransactionState,
+    isolation_level: IsolationLevel,
     shadow_pages: std.AutoHashMap(u32, *[PAGE_SIZE]u8),
+    snapshot_pages: std.AutoHashMap(u32, *[PAGE_SIZE]u8),
     savepoints: std.ArrayList(Savepoint),
 
     pub fn init(allocator: std.mem.Allocator, pager: *Pager) Transaction {
@@ -27,7 +45,9 @@ pub const Transaction = struct {
             .allocator = allocator,
             .pager = pager,
             .state = .none,
+            .isolation_level = .read_committed,
             .shadow_pages = std.AutoHashMap(u32, *[PAGE_SIZE]u8).init(allocator),
+            .snapshot_pages = std.AutoHashMap(u32, *[PAGE_SIZE]u8).init(allocator),
             .savepoints = std.ArrayList(Savepoint){},
         };
     }
@@ -39,6 +59,12 @@ pub const Transaction = struct {
         }
         self.shadow_pages.deinit();
 
+        var snap_iter = self.snapshot_pages.valueIterator();
+        while (snap_iter.next()) |snap_ptr| {
+            self.allocator.destroy(snap_ptr.*);
+        }
+        self.snapshot_pages.deinit();
+
         for (self.savepoints.items) |*sp| {
             var sp_iter = sp.shadow_pages.valueIterator();
             while (sp_iter.next()) |shadow_ptr| {
@@ -49,12 +75,20 @@ pub const Transaction = struct {
         self.savepoints.deinit(self.allocator);
     }
 
+    pub fn set_isolation_level(self: *Transaction, level: IsolationLevel) !void {
+        if (self.state == .active) {
+            return error.CannotChangeIsolationInTransaction;
+        }
+        self.isolation_level = level;
+        print("[TXN] SET ISOLATION LEVEL {s}\n", .{level.to_string()});
+    }
+
     pub fn begin(self: *Transaction) !void {
         if (self.state == .active) {
             return error.TransactionAlreadyActive;
         }
         self.state = .active;
-        print("[TXN] BEGIN\n", .{});
+        print("[TXN] BEGIN ({s})\n", .{self.isolation_level.to_string()});
     }
 
     pub fn commit(self: *Transaction) !void {
@@ -69,6 +103,12 @@ pub const Transaction = struct {
             self.allocator.destroy(shadow_ptr.*);
         }
         self.shadow_pages.clearRetainingCapacity();
+
+        var snap_iter = self.snapshot_pages.valueIterator();
+        while (snap_iter.next()) |snap_ptr| {
+            self.allocator.destroy(snap_ptr.*);
+        }
+        self.snapshot_pages.clearRetainingCapacity();
 
         for (self.savepoints.items) |*sp| {
             var sp_iter = sp.shadow_pages.valueIterator();
@@ -102,6 +142,12 @@ pub const Transaction = struct {
         }
         self.shadow_pages.clearRetainingCapacity();
 
+        var snap_iter = self.snapshot_pages.valueIterator();
+        while (snap_iter.next()) |snap_ptr| {
+            self.allocator.destroy(snap_ptr.*);
+        }
+        self.snapshot_pages.clearRetainingCapacity();
+
         for (self.savepoints.items) |*sp| {
             var sp_iter = sp.shadow_pages.valueIterator();
             while (sp_iter.next()) |shadow_ptr| {
@@ -113,6 +159,38 @@ pub const Transaction = struct {
 
         self.state = .none;
         print("[TXN] ROLLBACK\n", .{});
+    }
+
+    pub fn get_page_data(self: *Transaction, page_num: u32) ?*[PAGE_SIZE]u8 {
+        if (self.state == .active) {
+            switch (self.isolation_level) {
+                .serializable, .repeatable_read => {
+                    if (self.snapshot_pages.get(page_num)) |snapshot| {
+                        return snapshot;
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    pub fn snapshot_page(self: *Transaction, page_num: u32) !void {
+        if (self.state != .active) return;
+
+        switch (self.isolation_level) {
+            .serializable, .repeatable_read => {},
+            else => return,
+        }
+
+        if (self.snapshot_pages.contains(page_num)) return;
+
+        const page = self.pager.pages[page_num] orelse return;
+
+        const snapshot = try self.allocator.create([PAGE_SIZE]u8);
+        @memcpy(snapshot, &page.data);
+
+        try self.snapshot_pages.put(page_num, snapshot);
     }
 
     pub fn savepoint(self: *Transaction, name: []const u8) !void {
@@ -229,4 +307,5 @@ pub const TransactionError = error{
     TransactionAlreadyActive,
     NoActiveTransaction,
     SavepointNotFound,
+    CannotChangeIsolationInTransaction,
 };

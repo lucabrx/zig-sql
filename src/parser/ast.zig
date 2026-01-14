@@ -26,6 +26,7 @@ pub const Statement = union(enum) {
     rollback_stmt: RollbackStatement,
     savepoint_stmt: SavepointStatement,
     release_savepoint_stmt: ReleaseSavepointStatement,
+    set_transaction_stmt: SetTransactionStatement,
 };
 
 pub const Node = union(enum) {
@@ -103,6 +104,17 @@ pub const SavepointStatement = struct {
 };
 pub const ReleaseSavepointStatement = struct {
     name: []const u8,
+};
+
+pub const IsolationLevel = enum {
+    read_uncommitted,
+    read_committed,
+    repeatable_read,
+    serializable,
+};
+
+pub const SetTransactionStatement = struct {
+    isolation_level: IsolationLevel,
 };
 
 pub const CreateIndexStatement = struct {

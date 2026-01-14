@@ -58,6 +58,15 @@ pub const Compiler = struct {
             },
             .savepoint_stmt => |s| _ = try self.emit(.txn_savepoint, 0, 0, 0, s.name, null),
             .release_savepoint_stmt => |s| _ = try self.emit(.txn_release, 0, 0, 0, s.name, null),
+            .set_transaction_stmt => |s| {
+                const level: i32 = switch (s.isolation_level) {
+                    .read_uncommitted => 0,
+                    .read_committed => 1,
+                    .repeatable_read => 2,
+                    .serializable => 3,
+                };
+                _ = try self.emit(.txn_set_isolation, level, 0, 0, "", null);
+            },
         }
 
         _ = try self.emit(.halt, 0, 0, 0, "", null);

@@ -389,6 +389,15 @@ pub const REPL = struct {
             .release_savepoint_stmt => |sp| {
                 try self.writer.print("RELEASE SAVEPOINT {s}\n", .{sp.name});
             },
+            .set_transaction_stmt => |st| {
+                const level_str = switch (st.isolation_level) {
+                    .read_uncommitted => "READ UNCOMMITTED",
+                    .read_committed => "READ COMMITTED",
+                    .repeatable_read => "REPEATABLE READ",
+                    .serializable => "SERIALIZABLE",
+                };
+                try self.writer.print("SET TRANSACTION ISOLATION LEVEL {s}\n", .{level_str});
+            },
         }
     }
 

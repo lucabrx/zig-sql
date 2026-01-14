@@ -223,6 +223,59 @@ pub const Parser = struct {
                 }
                 return ast.Statement{ .release_savepoint_stmt = ast.ReleaseSavepointStatement{ .name = name } };
             },
+            token.TokenType.set => {
+                self.advance();
+                if (self.current.type != token.TokenType.transaction) {
+                    self.addError("Expected TRANSACTION after SET", .{});
+                    return error.UnexpectedToken;
+                }
+                self.advance();
+                if (self.current.type != token.TokenType.isolation) {
+                    self.addError("Expected ISOLATION after SET TRANSACTION", .{});
+                    return error.UnexpectedToken;
+                }
+                self.advance();
+                if (self.current.type != token.TokenType.level) {
+                    self.addError("Expected LEVEL after ISOLATION", .{});
+                    return error.UnexpectedToken;
+                }
+                self.advance();
+
+                const level: ast.IsolationLevel = blk: {
+                    if (self.current.type == token.TokenType.read) {
+                        self.advance();
+                        if (self.current.type == token.TokenType.uncommitted) {
+                            self.advance();
+                            break :blk .read_uncommitted;
+                        } else if (self.current.type == token.TokenType.committed) {
+                            self.advance();
+                            break :blk .read_committed;
+                        } else {
+                            self.addError("Expected UNCOMMITTED or COMMITTED after READ", .{});
+                            return error.UnexpectedToken;
+                        }
+                    } else if (self.current.type == token.TokenType.repeatable) {
+                        self.advance();
+                        if (self.current.type != token.TokenType.read) {
+                            self.addError("Expected READ after REPEATABLE", .{});
+                            return error.UnexpectedToken;
+                        }
+                        self.advance();
+                        break :blk .repeatable_read;
+                    } else if (self.current.type == token.TokenType.serializable) {
+                        self.advance();
+                        break :blk .serializable;
+                    } else {
+                        self.addError("Expected isolation level (READ UNCOMMITTED, READ COMMITTED, REPEATABLE READ, SERIALIZABLE)", .{});
+                        return error.UnexpectedToken;
+                    }
+                };
+
+                if (self.current.type == token.TokenType.semicolon) {
+                    self.advance();
+                }
+                return ast.Statement{ .set_transaction_stmt = ast.SetTransactionStatement{ .isolation_level = level } };
+            },
             else => {
                 self.addError("Unexpected token '{s}' at start of statement", .{@tagName(self.current.type)});
                 return error.UnexpectedToken;

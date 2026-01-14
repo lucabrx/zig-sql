@@ -78,6 +78,13 @@ pub const TokenType = enum {
     savepoint,
     release,
     to,
+    isolation,
+    level,
+    read,
+    uncommitted,
+    committed,
+    repeatable,
+    serializable,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -149,6 +156,13 @@ pub const TokenType = enum {
             .savepoint => "SAVEPOINT",
             .release => "RELEASE",
             .to => "TO",
+            .isolation => "ISOLATION",
+            .level => "LEVEL",
+            .read => "READ",
+            .uncommitted => "UNCOMMITTED",
+            .committed => "COMMITTED",
+            .repeatable => "REPEATABLE",
+            .serializable => "SERIALIZABLE",
         };
     }
 };
@@ -207,6 +221,13 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "SAVEPOINT", .savepoint },
     .{ "RELEASE", .release },
     .{ "TO", .to },
+    .{ "ISOLATION", .isolation },
+    .{ "LEVEL", .level },
+    .{ "READ", .read },
+    .{ "UNCOMMITTED", .uncommitted },
+    .{ "COMMITTED", .committed },
+    .{ "REPEATABLE", .repeatable },
+    .{ "SERIALIZABLE", .serializable },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {
