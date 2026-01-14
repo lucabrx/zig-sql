@@ -6,4 +6,5 @@ pub const VmErrors = error{
     RegisterOOB,
     NoCursor,
     NoTable,
+    NullConstraintViolation,
 };

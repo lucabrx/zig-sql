@@ -74,7 +74,11 @@ test "compile create table" {
 
     if (compiler.instructions.items[0].p5) |ptr| {
         const schema_ptr: *Schema = @ptrCast(@alignCast(ptr));
+=        for (schema_ptr.columns) |col| {
+            allocator.free(col.name);
+        }
         allocator.free(schema_ptr.columns);
+        allocator.free(schema_ptr.table_name);
         allocator.destroy(schema_ptr);
     }
 
