@@ -88,6 +88,8 @@ pub const VM = struct {
     halted: bool = false,
     debug: bool = true,
     allocator: std.mem.Allocator,
+    index_rowids: std.ArrayList(u32),
+    index_pos: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, db: *storage.Database) VM {
         return VM{
@@ -96,6 +98,8 @@ pub const VM = struct {
             .tables = std.AutoHashMap(i32, *storage.Table).init(allocator),
             .results = std.ArrayList([]RegisterValue){},
             .allocator = allocator,
+            .index_rowids = std.ArrayList(u32){},
+            .index_pos = 0,
         };
     }
 
@@ -106,6 +110,7 @@ pub const VM = struct {
             self.allocator.free(r);
         }
         self.results.deinit(self.allocator);
+        self.index_rowids.deinit(self.allocator);
     }
 
     pub fn set_debug(self: *VM, enabled: bool) void {
@@ -190,6 +195,8 @@ pub const VM = struct {
             .create_index => try self.op_create_index(inst),
             .drop_table => try self.op_drop_table(inst),
             .drop_index => try self.op_drop_index(inst),
+            .index_scan => try self.op_index_scan(inst),
+            .index_next => try self.op_index_next(inst),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .delete => try self.op_delete(inst),
             else => return VmErrors.InvalidOp,
@@ -349,6 +356,64 @@ pub const VM = struct {
             if (inst.p1 == 0) return err;
         };
         self.pc += 1;
+    }
+
+    fn op_index_scan(self: *VM, inst: Instruction) !void {
+        const index_btree = @import("../storage/index_btree.zig");
+        const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
+        const index_name = inst.p4;
+        const value_reg: usize = @intCast(inst.p3);
+
+        const index_def = try self.db.get_index(index_name);
+
+        const search_val = self.registers[value_reg];
+        const key_hash: u32 = switch (search_val.type) {
+            .integer => index_btree.hash_int(search_val.integer),
+            .real => index_btree.hash_float(search_val.real),
+            .text => index_btree.hash_bytes(search_val.text),
+            .blob => index_btree.hash_bytes(search_val.blob),
+            .boolean => if (search_val.boolean) @as(u32, 1) else @as(u32, 0),
+            .null => 0,
+        };
+
+        self.index_rowids.clearRetainingCapacity();
+        self.index_pos = 0;
+
+        const idx_btree = try self.db.get_index_btree(index_name);
+        try idx_btree.find(key_hash, self.allocator, &self.index_rowids);
+
+        if (self.debug) {
+            print("[VM] INDEX_SCAN on '{s}': hash={}, found {} matches\n", .{ index_name, key_hash, self.index_rowids.items.len });
+        }
+
+        if (self.index_rowids.items.len == 0) {
+            self.pc = @intCast(inst.p2);
+            return;
+        }
+
+        const first_rowid = self.index_rowids.items[0];
+        const cursor = try table.search(first_rowid);
+        try self.cursors.put(inst.p1, cursor);
+
+        _ = index_def;
+        self.pc += 1;
+    }
+
+    fn op_index_next(self: *VM, inst: Instruction) !void {
+        const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
+
+        self.index_pos += 1;
+
+        if (self.index_pos >= self.index_rowids.items.len) {
+            self.pc += 1;
+            return;
+        }
+
+        const rowid = self.index_rowids.items[self.index_pos];
+        const cursor = try table.search(rowid);
+        try self.cursors.put(inst.p1, cursor);
+
+        self.pc = @intCast(inst.p2);
     }
 
     fn op_delete(self: *VM, inst: Instruction) !void {

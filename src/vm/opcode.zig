@@ -60,6 +60,9 @@ pub const Opcode = enum(u8) {
     drop_table,
     drop_index,
 
+    index_scan,
+    index_next,
+
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
             .init => "INIT",
@@ -101,6 +104,8 @@ pub const Opcode = enum(u8) {
             .create_index => "CREATE_INDEX",
             .drop_table => "DROP_TABLE",
             .drop_index => "DROP_INDEX",
+            .index_scan => "INDEX_SCAN",
+            .index_next => "INDEX_NEXT",
         };
     }
 };
