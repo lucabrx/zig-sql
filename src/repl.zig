@@ -469,6 +469,9 @@ pub const REPL = struct {
                     .rename_column => |r| try self.writer.print("  RENAME COLUMN {s} TO {s}\n", .{ r.old_name, r.new_name }),
                 }
             },
+            .vacuum_stmt => {
+                try self.writer.writeAll("VACUUM\n");
+            },
         }
     }
 

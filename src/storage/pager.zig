@@ -4,7 +4,10 @@ const print = std.debug.print;
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_PAGES: usize = 100;
+pub const CACHE_SIZE: usize = 32;
 const CHECKSUM_OFFSET: usize = PAGE_SIZE - 4;
+const FREE_LIST_PAGE: u32 = 0;
+const FREE_LIST_HEADER_SIZE: usize = 8;
 
 pub const Page = struct {
     data: [PAGE_SIZE]u8,
@@ -16,6 +19,12 @@ pub const Page = struct {
             .dirty = false,
         };
     }
+};
+
+const CacheEntry = struct {
+    page: *Page,
+    page_num: u32,
+    access_count: u64,
 };
 
 fn compute_checksum(data: []const u8) u32 {
@@ -42,6 +51,7 @@ pub const PagerError = error{
     PageNotFound,
     IncompleteRead,
     PageCorrupted,
+    NoFreePages,
 };
 
 pub const Pager = struct {
@@ -52,6 +62,10 @@ pub const Pager = struct {
     allocator: std.mem.Allocator,
     in_memory: bool,
     use_checksums: bool,
+    access_counter: u64,
+    cache_hits: u64,
+    cache_misses: u64,
+    free_pages: std.ArrayList(u32),
 
     pub fn init(allocator: std.mem.Allocator, filename: []const u8) !Pager {
         return initWithOptions(allocator, filename, true);
@@ -70,6 +84,10 @@ pub const Pager = struct {
                 .allocator = allocator,
                 .in_memory = true,
                 .use_checksums = false,
+                .access_counter = 0,
+                .cache_hits = 0,
+                .cache_misses = 0,
+                .free_pages = std.ArrayList(u32){},
             };
         }
 
@@ -85,7 +103,7 @@ pub const Pager = struct {
 
         print("[PAGER] Opened database: {s} ({} pages)\n", .{ filename, num_pages });
 
-        return Pager{
+        var pager = Pager{
             .file = file,
             .file_length = file_len,
             .num_pages = num_pages,
@@ -93,10 +111,20 @@ pub const Pager = struct {
             .allocator = allocator,
             .in_memory = false,
             .use_checksums = use_checksums,
+            .access_counter = 0,
+            .cache_hits = 0,
+            .cache_misses = 0,
+            .free_pages = std.ArrayList(u32){},
         };
+
+        pager.load_free_list() catch {};
+
+        return pager;
     }
 
     pub fn deinit(self: *Pager) void {
+        self.save_free_list() catch {};
+
         self.flush() catch |err| {
             print("[PAGER] Error flushing on close: {}\n", .{err});
         };
@@ -111,14 +139,62 @@ pub const Pager = struct {
                 self.pages[i] = null;
             }
         }
+
+        self.free_pages.deinit(self.allocator);
+
         print("[PAGER] Database closed\n", .{});
+    }
+
+    fn count_cached_pages(self: *Pager) usize {
+        var count: usize = 0;
+        for (0..MAX_PAGES) |i| {
+            if (self.pages[i] != null) count += 1;
+        }
+        return count;
+    }
+
+    fn evict_lru_page(self: *Pager) !void {
+        var oldest_idx: ?usize = null;
+        var oldest_access: u64 = std.math.maxInt(u64);
+
+        for (0..MAX_PAGES) |i| {
+            if (self.pages[i]) |_| {
+                const page_num: u32 = @intCast(i);
+                if (page_num < 2) continue;
+
+                if (i < oldest_access) {
+                    oldest_idx = i;
+                    oldest_access = i;
+                }
+            }
+        }
+
+        if (oldest_idx) |idx| {
+            const page_num: u32 = @intCast(idx);
+            if (self.pages[idx]) |p| {
+                if (p.dirty) {
+                    try self.flush_page(page_num);
+                }
+                self.allocator.destroy(p);
+                self.pages[idx] = null;
+            }
+        }
     }
 
     pub fn get_page(self: *Pager, page_num: u32) !*Page {
         if (page_num >= MAX_PAGES) return error.PageOutOfBounds;
 
+        self.access_counter += 1;
+
         if (self.pages[page_num]) |p| {
+            self.cache_hits += 1;
             return p;
+        }
+
+        self.cache_misses += 1;
+
+        if (self.count_cached_pages() >= CACHE_SIZE) {
+            try self.evict_lru_page();
         }
 
         const page = try self.allocator.create(Page);
@@ -149,6 +225,73 @@ pub const Pager = struct {
         }
 
         return page;
+    }
+
+    pub fn allocate_page(self: *Pager) !u32 {
+        if (self.free_pages.items.len > 0) {
+            const page_num = self.free_pages.pop();
+            print("[PAGER] Reusing free page {}\n", .{page_num});
+            return page_num;
+        }
+
+        const new_page_num = self.num_pages;
+        if (new_page_num >= MAX_PAGES) return error.NoFreePages;
+
+        _ = try self.get_page(new_page_num);
+        return new_page_num;
+    }
+
+    pub fn free_page(self: *Pager, page_num: u32) !void {
+        if (page_num < 2) return;
+
+        if (self.pages[page_num]) |p| {
+            @memset(&p.data, 0);
+            p.dirty = false;
+            self.allocator.destroy(p);
+            self.pages[page_num] = null;
+        }
+
+        try self.free_pages.append(self.allocator, page_num);
+        print("[PAGER] Freed page {}\n", .{page_num});
+    }
+
+    fn load_free_list(self: *Pager) !void {
+        if (self.in_memory or self.num_pages == 0) return;
+
+        const page = try self.get_page(0);
+        const magic = std.mem.readInt(u32, page.data[0..4], .little);
+        if (magic != 0x5A444246) return;
+
+        const count = std.mem.readInt(u32, page.data[4..8], .little);
+        const max_entries = (PAGE_SIZE - FREE_LIST_HEADER_SIZE) / 4;
+        const entries_to_read = @min(count, max_entries);
+
+        for (0..entries_to_read) |i| {
+            const offset = FREE_LIST_HEADER_SIZE + i * 4;
+            const free_page_num = std.mem.readInt(u32, page.data[offset..][0..4], .little);
+            if (free_page_num > 0 and free_page_num < MAX_PAGES) {
+                try self.free_pages.append(self.allocator, free_page_num);
+            }
+        }
+    }
+
+    fn save_free_list(self: *Pager) !void {
+        if (self.in_memory or self.free_pages.items.len == 0) return;
+
+        const page = try self.get_page(0);
+
+        std.mem.writeInt(u32, page.data[0..4], 0x5A444246, .little);
+        std.mem.writeInt(u32, page.data[4..8], @intCast(self.free_pages.items.len), .little);
+
+        const max_entries = (PAGE_SIZE - FREE_LIST_HEADER_SIZE) / 4;
+        const entries_to_write = @min(self.free_pages.items.len, max_entries);
+
+        for (0..entries_to_write) |i| {
+            const offset = FREE_LIST_HEADER_SIZE + i * 4;
+            std.mem.writeInt(u32, page.data[offset..][0..4], self.free_pages.items[i], .little);
+        }
+
+        page.dirty = true;
     }
 
     pub fn flush_page(self: *Pager, page_num: u32) !void {
@@ -201,6 +344,16 @@ pub const Pager = struct {
         }
     }
 
+    pub fn get_cache_stats(self: *Pager) struct { hits: u64, misses: u64, ratio: f64 } {
+        const total = self.cache_hits + self.cache_misses;
+        const ratio = if (total > 0) @as(f64, @floatFromInt(self.cache_hits)) / @as(f64, @floatFromInt(total)) else 0.0;
+        return .{ .hits = self.cache_hits, .misses = self.cache_misses, .ratio = ratio };
+    }
+
+    pub fn get_free_page_count(self: *Pager) usize {
+        return self.free_pages.items.len;
+    }
+
     pub fn debug_print_status(self: *Pager) void {
         print("[PAGER] Status: {} pages, in_memory={}\n", .{ self.num_pages, self.in_memory });
         var loaded: u32 = 0;
@@ -212,6 +365,9 @@ pub const Pager = struct {
             }
         }
         print("[PAGER] Loaded pages: {}, Dirty pages: {}\n", .{ loaded, dirty });
+        const stats = self.get_cache_stats();
+        print("[PAGER] Cache hits: {}, misses: {}, ratio: {d:.2}%\n", .{ stats.hits, stats.misses, stats.ratio * 100 });
+        print("[PAGER] Free pages: {}\n", .{self.free_pages.items.len});
     }
 };
 

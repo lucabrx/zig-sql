@@ -298,6 +298,7 @@ pub const VM = struct {
             .alter_rename_table => try self.op_alter_rename_table(inst),
             .alter_rename_column => try self.op_alter_rename_column(inst),
             .func_call => try self.op_func_call(inst),
+            .vacuum => try self.op_vacuum(),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -1832,6 +1833,12 @@ pub const VM = struct {
         } else {
             self.registers[dest_reg] = RegisterValue.init_null();
         }
+        self.pc += 1;
+    }
+
+    fn op_vacuum(self: *VM) !void {
+        const reclaimed = try self.db.vacuum();
+        print("[VM] VACUUM completed: {} cells compacted\n", .{reclaimed});
         self.pc += 1;
     }
 };

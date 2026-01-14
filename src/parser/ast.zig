@@ -112,7 +112,10 @@ pub const Statement = union(enum) {
     set_transaction_stmt: SetTransactionStatement,
     union_stmt: UnionStatement,
     alter_table_stmt: AlterTableStatement,
+    vacuum_stmt: VacuumStatement,
 };
+
+pub const VacuumStatement = struct {};
 
 pub const Node = union(enum) {
     stmt: Statement,

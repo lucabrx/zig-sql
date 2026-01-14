@@ -127,6 +127,7 @@ pub const TokenType = enum {
     typeof,
     cast,
     strftime,
+    vacuum,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -252,6 +253,7 @@ pub const TokenType = enum {
             .typeof => "TYPEOF",
             .cast => "CAST",
             .strftime => "STRFTIME",
+            .vacuum => "VACUUM",
         };
     }
 };
@@ -364,6 +366,7 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "TYPEOF", .typeof },
     .{ "CAST", .cast },
     .{ "STRFTIME", .strftime },
+    .{ "VACUUM", .vacuum },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

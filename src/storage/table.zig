@@ -529,6 +529,55 @@ pub const Database = struct {
         try self.save_catalog();
     }
 
+    pub fn vacuum(self: *Database) !u32 {
+        var reclaimed: u32 = 0;
+        const free_count = self.pager.get_free_page_count();
+
+        var table_iter = self.tables.iterator();
+        while (table_iter.next()) |entry| {
+            const table = entry.value_ptr.*;
+            reclaimed += try self.compact_table(table);
+        }
+
+        print("[DB] VACUUM: reclaimed {} cells, {} free pages available\n", .{ reclaimed, free_count });
+        return reclaimed;
+    }
+
+    fn compact_table(self: *Database, table: *Table) !u32 {
+        var compacted: u32 = 0;
+        const page = self.pager.get_page(table.btree.root_page) catch return 0;
+        const node = @import("node.zig");
+
+        if (node.get_node_type(page) != node.NODE_LEAF) return 0;
+
+        const num_cells = node.get_num_cells(page);
+        var write_idx: u32 = 0;
+
+        for (0..num_cells) |read_idx| {
+            const cell_offset = row_mod.leaf_cell_offset(@intCast(read_idx));
+            const key = std.mem.readInt(u32, page.data[cell_offset..][0..4], .little);
+
+            if (key != 0) {
+                if (write_idx != read_idx) {
+                    const dest_offset = row_mod.leaf_cell_offset(write_idx);
+                    @memcpy(
+                        page.data[dest_offset .. dest_offset + row_mod.LEAF_CELL_SIZE],
+                        page.data[cell_offset .. cell_offset + row_mod.LEAF_CELL_SIZE],
+                    );
+                    compacted += 1;
+                }
+                write_idx += 1;
+            }
+        }
+
+        if (compacted > 0) {
+            node.set_num_cells(page, write_idx);
+            self.pager.mark_dirty(table.btree.root_page);
+        }
+
+        return compacted;
+    }
+
     pub fn close(self: *Database) void {
         self.save_metadata() catch {};
 

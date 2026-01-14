@@ -288,6 +288,13 @@ pub const Parser = struct {
                 const stmt = try other.parse_alter(self);
                 return ast.Statement{ .alter_table_stmt = stmt };
             },
+            token.TokenType.vacuum => {
+                self.advance();
+                if (self.current.type == token.TokenType.semicolon) {
+                    self.advance();
+                }
+                return ast.Statement{ .vacuum_stmt = ast.VacuumStatement{} };
+            },
             else => {
                 self.addError("Unexpected token '{s}' at start of statement", .{@tagName(self.current.type)});
                 return error.UnexpectedToken;

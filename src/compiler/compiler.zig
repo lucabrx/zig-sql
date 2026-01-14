@@ -69,6 +69,7 @@ pub const Compiler = struct {
             },
             .union_stmt => |s| try select.compile_union(self, s),
             .alter_table_stmt => |s| try schema.compile_alter_table(self, s),
+            .vacuum_stmt => _ = try self.emit(.vacuum, 0, 0, 0, "", null),
         }
 
         _ = try self.emit(.halt, 0, 0, 0, "", null);
