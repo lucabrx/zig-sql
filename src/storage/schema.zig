@@ -6,6 +6,7 @@ pub const Type = enum {
     Text,
     Real,
     Blob,
+    Boolean,
 };
 
 pub const Column = struct {
@@ -53,6 +54,7 @@ pub const Schema = struct {
             .Real => return 8,
             .Text => return 4 + 256, // 4 bytes for length + 256 bytes for data
             .Blob => return 4 + 512, // for now fixed
+            .Boolean => return 1,
             else => return 8,
         }
     }
@@ -73,6 +75,7 @@ pub const Value = struct {
     real: ?f64,
     text: ?[]const u8,
     blob: ?[]const u8,
+    boolean: ?bool,
 };
 
 pub const DynamicRow = struct {
@@ -98,6 +101,7 @@ pub const DynamicRow = struct {
             .real = null,
             .text = null,
             .blob = null,
+            .boolean = null,
         };
     }
 
@@ -109,6 +113,7 @@ pub const DynamicRow = struct {
             .real = value,
             .text = null,
             .blob = null,
+            .boolean = null,
         };
     }
 
@@ -120,6 +125,7 @@ pub const DynamicRow = struct {
             .real = null,
             .text = value,
             .blob = null,
+            .boolean = null,
         };
     }
 
@@ -131,6 +137,19 @@ pub const DynamicRow = struct {
             .real = null,
             .text = null,
             .blob = null,
+            .boolean = null,
+        };
+    }
+
+    pub fn set_boolean(self: *DynamicRow, index: usize, value: bool) void {
+        self.values[index] = Value{
+            .type = .Boolean,
+            .is_null = false,
+            .integer = null,
+            .real = null,
+            .text = null,
+            .blob = null,
+            .boolean = value,
         };
     }
 
@@ -170,6 +189,18 @@ pub const DynamicRow = struct {
         }
     }
 
+    pub fn get_boolean(self: *DynamicRow, index: usize) StorageError!bool {
+        const val = self.values[index];
+        if (val.is_null) {
+            return StorageError.NullValueNotAllowed;
+        }
+        if (val.boolean) |b| {
+            return b;
+        } else {
+            return StorageError.TypeMismatch;
+        }
+    }
+
     pub fn serialize(self: *DynamicRow, schema: *Schema, buffer: []u8) StorageError!void {
         var offset: usize = 0;
         for (schema.columns, 0..) |col, i| {
@@ -195,6 +226,10 @@ pub const DynamicRow = struct {
                         const len = text_val.len;
                         std.mem.copy(u8, buffer[offset .. offset + 4], @as([]const u8, &len));
                         std.mem.copy(u8, buffer[offset + 4 .. offset + 4 + len], text_val);
+                    },
+                    .Boolean => {
+                        const bool_val = try self.get_boolean(i);
+                        std.mem.copy(u8, buffer[offset .. offset + 1], @as([]const u8, &bool_val));
                     },
                     else => return StorageError.TypeMismatch,
                 }
@@ -225,6 +260,11 @@ pub fn deserialize_dynamic_row(data: []const u8, schema: *Schema) StorageError!D
                 const text_val = data[offset .. offset + len];
                 row.set_text(i, text_val);
                 offset += len;
+            },
+            .Boolean => {
+                const bool_val = data[offset] != 0;
+                row.set_boolean(i, bool_val);
+                offset += 1;
             },
             else => return StorageError.TypeMismatch,
         }

@@ -235,6 +235,7 @@ pub const REPL = struct {
                     .integer => try self.writer.print("{d}", .{val.integer}),
                     .real => try self.writer.print("{d:.2}", .{val.real}),
                     .text => try self.writer.print("{s}", .{val.text}),
+                    .boolean => try self.writer.print("{s}", .{if (val.boolean) "TRUE" else "FALSE"}),
                     .null => try self.writer.writeAll("NULL"),
                 }
             }
@@ -331,6 +332,7 @@ pub const REPL = struct {
             .string_literal => |str_lit| try self.writer.print("'{s}'", .{str_lit.value}),
             .null_literal => try self.writer.writeAll("NULL"),
             .star_expression => try self.writer.writeAll("*"),
+            .boolean_literal => |bool_lit| try self.writer.print("{s}", .{if (bool_lit.value) "TRUE" else "FALSE"}),
             .binary_expression => |bin_expr| {
                 try self.format_expression(bin_expr.left);
                 try self.writer.print(" {s} ", .{bin_expr.operator});

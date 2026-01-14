@@ -5,6 +5,7 @@ pub const Expression = union(enum) {
     integer_literal: IntegerLiteral,
     float_literal: FloatLiteral,
     string_literal: StringLiteral,
+    boolean_literal: BooleanLiteral,
     null_literal: NullLiteral,
     star_expression: StarExpression,
     binary_expression: *BinaryExpression,
@@ -99,6 +100,10 @@ pub const StringLiteral = struct {
 };
 
 pub const NullLiteral = struct {};
+
+pub const BooleanLiteral = struct {
+    value: bool,
+};
 
 pub const StarExpression = struct {};
 

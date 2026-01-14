@@ -93,6 +93,10 @@ fn parse_column_def(self: *Parser) ParseError!ast.ColumnDef {
             col.type_name = "BLOB";
             self.advance();
         },
+        token.TokenType.boolean => {
+            col.type_name = "BOOLEAN";
+            self.advance();
+        },
         else => {
             if (self.current.type == .ident) {
                 col.type_name = self.current.literal;

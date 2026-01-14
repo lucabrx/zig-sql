@@ -23,6 +23,9 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
         .string_literal => |str_lit| {
             _ = try c.emit(.string, dest_reg, 0, 0, str_lit.value, null);
         },
+        .boolean_literal => |bool_lit| {
+            _ = try c.emit(.integer, dest_reg, if (bool_lit.value) 1 else 0, 0, "", null);
+        },
         .null_literal => {
             _ = try c.emit(.null, dest_reg, 0, 0, "", null);
         },

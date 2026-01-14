@@ -183,6 +183,24 @@ pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
             self.advance();
             return expr;
         },
+        token.TokenType.true => {
+            const expr = ast.Expression{
+                .boolean_literal = ast.BooleanLiteral{
+                    .value = true,
+                },
+            };
+            self.advance();
+            return expr;
+        },
+        token.TokenType.false => {
+            const expr = ast.Expression{
+                .boolean_literal = ast.BooleanLiteral{
+                    .value = false,
+                },
+            };
+            self.advance();
+            return expr;
+        },
         token.TokenType.ident => {
             const expr = ast.Expression{
                 .identifier = ast.Identifier{

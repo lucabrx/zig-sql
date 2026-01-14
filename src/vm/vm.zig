@@ -35,6 +35,7 @@ pub const RegisterValue = struct {
     integer: i64 = 0,
     real: f64 = 0.0,
     text: []const u8 = "",
+    boolean: bool = false,
     is_null: bool = true,
 
     pub const ValueType = enum {
@@ -42,6 +43,7 @@ pub const RegisterValue = struct {
         real,
         text,
         null,
+        boolean,
     };
 
     pub fn init_integer(value: i64) RegisterValue {
@@ -49,6 +51,7 @@ pub const RegisterValue = struct {
             .type = .integer,
             .integer = value,
             .is_null = false,
+            .boolean = false,
         };
     }
 
@@ -72,6 +75,14 @@ pub const RegisterValue = struct {
         return RegisterValue{
             .type = .null,
             .is_null = true,
+        };
+    }
+
+    pub fn init_boolean(value: bool) RegisterValue {
+        return RegisterValue{
+            .type = .boolean,
+            .boolean = value,
+            .is_null = false,
         };
     }
 };
@@ -293,6 +304,11 @@ pub const VM = struct {
                 const email = std.mem.sliceTo(email_data, 0);
                 self.registers[dest_reg] = RegisterValue.init_text(email);
             },
+            3 => {
+                const active_offset = storage.row.COL_ID_SIZE + storage.row.COL_USERNAME_SIZE + storage.row.COL_EMAIL_SIZE;
+                const active = row_data[active_offset] != 0;
+                self.registers[dest_reg] = RegisterValue.init_boolean(active);
+            },
             else => self.registers[dest_reg] = RegisterValue.init_null(),
         }
 
@@ -329,19 +345,43 @@ pub const VM = struct {
         // Build row from registers
         var username: []const u8 = "";
         var email: []const u8 = "";
+        var active: bool = false;
 
         if (inst.p3 > 1) {
-            username = self.registers[start_reg + 1].text;
+            const reg = self.registers[start_reg + 1];
+            if (reg.type == .text) {
+                username = reg.text;
+            } else if (reg.type == .boolean) {
+                active = reg.boolean;
+            } else if (reg.type == .integer) {
+                // Boolean stored as integer 0/1
+                active = reg.integer != 0;
+            }
         }
         if (inst.p3 > 2) {
-            email = self.registers[start_reg + 2].text;
+            const reg = self.registers[start_reg + 2];
+            if (reg.type == .text) {
+                email = reg.text;
+            } else if (reg.type == .boolean) {
+                active = reg.boolean;
+            } else if (reg.type == .integer) {
+                active = reg.integer != 0;
+            }
+        }
+        if (inst.p3 > 3) {
+            const reg = self.registers[start_reg + 3];
+            if (reg.type == .boolean) {
+                active = reg.boolean;
+            } else if (reg.type == .integer) {
+                active = reg.integer != 0;
+            }
         }
 
         if (self.debug) {
-            print("[VM] op_insert: key={}, username='{s}', email='{s}', num_cols={}\n", .{ key, username, email, inst.p3 });
+            print("[VM] op_insert: key={}, username='{s}', email='{s}', active={}, num_cols={}\n", .{ key, username, email, active, inst.p3 });
         }
 
-        const row = storage.Row.init(key, username, email);
+        const row = storage.Row.initWithActive(key, username, email, active);
         try table.insert(key, row);
 
         self.pc += 1;
@@ -413,6 +453,12 @@ pub const VM = struct {
             result = switch (inst.op) {
                 .eq => std.mem.eql(u8, left.text, right.text),
                 .ne => !std.mem.eql(u8, left.text, right.text),
+                else => false,
+            };
+        } else if (left.type == .boolean and right.type == .boolean) {
+            result = switch (inst.op) {
+                .eq => left.boolean == right.boolean,
+                .ne => left.boolean != right.boolean,
                 else => false,
             };
         }

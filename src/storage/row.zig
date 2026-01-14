@@ -5,7 +5,8 @@ const node = @import("node.zig");
 pub const COL_ID_SIZE: usize = 4;
 pub const COL_USERNAME_SIZE: usize = 32;
 pub const COL_EMAIL_SIZE: usize = 255;
-pub const ROW_SIZE: usize = COL_ID_SIZE + COL_USERNAME_SIZE + COL_EMAIL_SIZE;
+pub const COL_ACTIVE_SIZE: usize = 1;
+pub const ROW_SIZE: usize = COL_ID_SIZE + COL_USERNAME_SIZE + COL_EMAIL_SIZE + COL_ACTIVE_SIZE;
 
 pub const PAGE_SIZE = @import("pager.zig").PAGE_SIZE;
 
@@ -13,12 +14,18 @@ pub const Row = struct {
     id: u32,
     username: [COL_USERNAME_SIZE]u8,
     email: [COL_EMAIL_SIZE]u8,
+    active: bool,
 
     pub fn init(id: u32, username: []const u8, email: []const u8) Row {
+        return Row.initWithActive(id, username, email, false);
+    }
+
+    pub fn initWithActive(id: u32, username: []const u8, email: []const u8, active: bool) Row {
         var r = Row{
             .id = id,
             .username = std.mem.zeroes([COL_USERNAME_SIZE]u8),
             .email = std.mem.zeroes([COL_EMAIL_SIZE]u8),
+            .active = active,
         };
 
         const u_len = @min(username.len, COL_USERNAME_SIZE);
@@ -40,6 +47,9 @@ pub const Row = struct {
         const email_offset = COL_ID_SIZE + COL_USERNAME_SIZE;
         @memcpy(buf[email_offset .. email_offset + COL_EMAIL_SIZE], &self.email);
 
+        const active_offset = email_offset + COL_EMAIL_SIZE;
+        buf[active_offset] = if (self.active) 1 else 0;
+
         return buf;
     }
 };
@@ -53,6 +63,9 @@ pub fn deserialize_row(data: []const u8) Row {
 
     const email_offset = COL_ID_SIZE + COL_USERNAME_SIZE;
     @memcpy(&row.email, data[email_offset .. email_offset + COL_EMAIL_SIZE]);
+
+    const active_offset = email_offset + COL_EMAIL_SIZE;
+    row.active = data[active_offset] != 0;
 
     return row;
 }
