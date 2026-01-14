@@ -9,6 +9,9 @@ const CompilerError = @import("errors.zig").CompilerError;
 const expression = @import("expression.zig");
 const Schema = @import("../storage/schema.zig").Schema;
 const IndexDef = @import("../storage/schema.zig").IndexDef;
+const ViewDef = @import("../storage/schema.zig").ViewDef;
+const Parser = @import("../parser/parser.zig").Parser;
+const lexer = @import("../lexer/lexer.zig");
 
 const IndexCandidate = struct {
     index_name: []const u8,
@@ -51,6 +54,38 @@ fn compile_union_right(c: *Compiler, right: *ast.UnionOrSelect, all: bool) !void
             _ = try c.emit(.union_merge, if (all) 1 else 0, 0, 0, "", null);
             try compile_union_right(c, u.right, u.all);
         },
+    }
+}
+
+fn compile_view_select(c: *Compiler, outer_stmt: SelectStatement, view_def: *ViewDef) !void {
+    _ = outer_stmt;
+
+    var lex = lexer.Lexer.init(view_def.sql);
+    const tokens = lex.tokenize(c.allocator) catch return CompilerError.InvalidSyntax;
+    defer c.allocator.free(tokens);
+
+    var parser = Parser.init(tokens, c.allocator);
+    defer parser.deinit();
+
+    const parsed = parser.parse() catch return CompilerError.InvalidSyntax;
+    const view_select = switch (parsed) {
+        .select_stmt => |s| s,
+        else => return CompilerError.InvalidSyntax,
+    };
+
+    if (view_select.group_by.len > 0 or has_aggregates(view_select.columns)) {
+        try compile_grouped_select(c, view_select);
+    } else if (view_select.joins.len > 0 or view_select.from.len > 1) {
+        try compile_join_select(c, view_select);
+    } else {
+        const table = c.db.get_table(view_select.from[0].name) catch return CompilerError.TableNotFound;
+        const schema = table.schema;
+
+        const output_cols = try resolve_select_columns(c, view_select.columns, schema);
+        defer c.allocator.free(output_cols);
+
+        try compile_full_scan(c, view_select, schema, output_cols);
+        try compile_order_limit(c, view_select, schema);
     }
 }
 
@@ -159,8 +194,7 @@ fn analyze_aggregates(c: *Compiler, cols: []const ast.SelectColumn, schema: *con
 fn compile_simple_select(c: *Compiler, stmt: SelectStatement) !void {
     const table = c.db.get_table(stmt.from[0].name) catch {
         if (c.db.get_view(stmt.from[0].name)) |view_def| {
-            _ = view_def;
-            return CompilerError.ViewNotSupported;
+            return compile_view_select(c, stmt, view_def);
         } else |_| {}
         return CompilerError.TableNotFound;
     };

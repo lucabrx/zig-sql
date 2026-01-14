@@ -139,7 +139,19 @@ fn parse_create_view(self: *Parser) ParseError!ast.CreateViewStatement {
         return error.UnexpectedToken;
     }
 
+    const select_start_pos = self.pos;
     const select_stmt = try select.parse_select(self);
+    const select_end_pos = self.pos;
+
+    var sql_parts = std.ArrayList(u8){};
+    for (self.tokens[select_start_pos..select_end_pos]) |tok| {
+        if (tok.type == .eof or tok.type == .semicolon) break;
+        if (sql_parts.items.len > 0) {
+            sql_parts.append(self.allocator, ' ') catch {};
+        }
+        sql_parts.appendSlice(self.allocator, tok.literal) catch {};
+    }
+    const sql = sql_parts.toOwnedSlice(self.allocator) catch "";
 
     if (self.current.type == token.TokenType.semicolon) {
         self.advance();
@@ -148,6 +160,7 @@ fn parse_create_view(self: *Parser) ParseError!ast.CreateViewStatement {
     return ast.CreateViewStatement{
         .name = view_name,
         .select = select_stmt,
+        .sql = sql,
     };
 }
 

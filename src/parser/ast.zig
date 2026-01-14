@@ -280,6 +280,7 @@ pub const CreateIndexStatement = struct {
 pub const CreateViewStatement = struct {
     name: []const u8,
     select: SelectStatement,
+    sql: []const u8 = "",
 };
 
 pub const DropViewStatement = struct {

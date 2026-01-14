@@ -301,6 +301,7 @@ pub const VM = struct {
             .vacuum => try self.op_vacuum(),
             .create_view => try self.op_create_view(inst),
             .drop_view => try self.op_drop_view(inst),
+            .update_row => try self.op_update_row(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -2005,8 +2006,7 @@ pub const VM = struct {
         if (inst.p5) |ptr| {
             const ast = @import("../parser/ast.zig");
             const view_stmt: *ast.CreateViewStatement = @ptrCast(@alignCast(ptr));
-            _ = view_stmt;
-            try self.db.create_view(view_name, view_name);
+            try self.db.create_view(view_name, view_stmt.sql);
         }
         self.pc += 1;
     }
@@ -2016,6 +2016,99 @@ pub const VM = struct {
             if (inst.p1 == 0) return err;
         };
         self.pc += 1;
+    }
+
+    fn op_update_row(self: *VM, inst: Instruction) !void {
+        const cursor = self.cursors.getPtr(inst.p1) orelse return VmErrors.NoCursor;
+        const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
+        const start_reg: usize = @intCast(inst.p2);
+        const num_cols: usize = @intCast(inst.p3);
+
+        const page_num = cursor.page_number();
+        const page = try self.db.pager.get_page(page_num);
+        const cell_num = cursor.cell_number();
+
+        const old_row = storage.row.get_leaf_row(page, cell_num, table.schema);
+        const rowid = storage.row.get_leaf_key(page, cell_num);
+
+        try self.handle_foreign_key_on_update(table, &old_row, start_reg, num_cols);
+
+        self.db.delete_from_indexes(table.schema.table_name, rowid, &old_row) catch {};
+
+        var values: [MAX_REGISTERS]storage.RowValue = undefined;
+        const cols_to_use = @min(num_cols, table.schema.columns.len);
+        for (0..cols_to_use) |i| {
+            values[i] = self.registers[start_reg + i].to_row_value();
+        }
+
+        var new_row = storage.DynamicRow.init();
+        try new_row.serialize_values(table.schema, values[0..cols_to_use]);
+
+        storage.row.set_leaf_value(page, cell_num, new_row.as_bytes());
+        self.db.pager.mark_dirty(page_num);
+
+        try self.db.insert_into_indexes(table.schema.table_name, rowid, &new_row);
+        try self.db.wal_log_page(page_num);
+
+        self.pc += 1;
+    }
+
+    fn handle_foreign_key_on_update(self: *VM, parent_table: *storage.Table, old_row: *const storage.DynamicRow, new_start_reg: usize, num_cols: usize) !void {
+        const schema_mod = @import("../storage/schema.zig");
+        var table_iter = self.db.tables.iterator();
+
+        while (table_iter.next()) |entry| {
+            const child_table = entry.value_ptr.*;
+            const child_schema = child_table.schema;
+
+            for (child_schema.columns, 0..) |col, col_idx| {
+                const fk = col.foreign_key orelse continue;
+                if (!std.mem.eql(u8, fk.ref_table, parent_table.schema.table_name)) continue;
+
+                const ref_col_idx = parent_table.schema.get_column_index(fk.ref_column) catch continue;
+                const old_val = old_row.get_value(parent_table.schema, ref_col_idx);
+
+                if (ref_col_idx >= num_cols) continue;
+                const new_reg = self.registers[new_start_reg + ref_col_idx];
+                const new_val = new_reg.to_row_value();
+
+                if (self.row_values_equal(old_val, new_val)) continue;
+
+                switch (fk.on_update) {
+                    .cascade => {
+                        try self.cascade_update(child_table, col_idx, old_val, new_val);
+                    },
+                    .set_null => {
+                        try self.set_null_on_update(child_table, col_idx, old_val);
+                    },
+                    .restrict => {
+                        if (try self.has_referencing_rows(child_table, col_idx, old_val)) {
+                            return VmErrors.ForeignKeyViolation;
+                        }
+                    },
+                    else => {},
+                }
+                _ = schema_mod;
+            }
+        }
+    }
+
+    fn cascade_update(self: *VM, child_table: *storage.Table, col_idx: usize, old_val: storage.RowValue, new_val: storage.RowValue) !void {
+        var cursor = storage.Cursor.new_cursor_start(&child_table.btree) catch return;
+
+        while (!cursor.is_end()) {
+            const page = self.db.pager.get_page(cursor.page_num) catch break;
+            const child_val = storage.row.get_value_from_page(page, cursor.cell_num, child_table.schema, col_idx);
+            if (self.row_values_equal(old_val, child_val)) {
+                storage.row.set_value_in_page(page, cursor.cell_num, child_table.schema, col_idx, new_val);
+                self.db.pager.mark_dirty(cursor.page_num);
+            }
+            cursor.advance() catch break;
+        }
+    }
+
+    fn set_null_on_update(self: *VM, child_table: *storage.Table, col_idx: usize, old_val: storage.RowValue) !void {
+        try self.set_null_on_delete(child_table, col_idx, old_val);
     }
 };
 

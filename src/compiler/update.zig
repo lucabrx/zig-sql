@@ -39,9 +39,7 @@ pub fn compile_update(c: *Compiler, stmt: UpdateStatement) !void {
         }
     }
 
-    _ = try c.emit(.delete, 0, 0, 0, "", null);
-
-    _ = try c.emit(.insert, 0, start_reg, @intCast(schema.columns.len), "", null);
+    _ = try c.emit(.update_row, 0, start_reg, @intCast(schema.columns.len), "", null);
 
     _ = try c.emit(.next, 0, @intCast(loop_start), 0, "", null);
 

@@ -97,6 +97,7 @@ pub const Opcode = enum(u8) {
     vacuum,
     create_view,
     drop_view,
+    update_row,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -171,6 +172,7 @@ pub const Opcode = enum(u8) {
             .vacuum => "VACUUM",
             .create_view => "CREATE_VIEW",
             .drop_view => "DROP_VIEW",
+            .update_row => "UPDATE_ROW",
         };
     }
 };

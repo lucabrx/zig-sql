@@ -4,4 +4,5 @@ pub const CompilerError = error{
     ColumnNotFound,
     OutOfMemory,
     ViewNotSupported,
+    InvalidSyntax,
 };
