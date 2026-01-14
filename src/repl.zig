@@ -464,6 +464,11 @@ pub const REPL = struct {
                 };
                 try self.writer.print("{s}(...)", .{func_name});
             },
+            .between => try self.writer.writeAll("BETWEEN ..."),
+            .in_list => try self.writer.writeAll("IN (...)"),
+            .in_subquery => try self.writer.writeAll("IN (SUBQUERY)"),
+            .like => try self.writer.writeAll("LIKE ..."),
+            .is_null => try self.writer.writeAll("IS NULL"),
         }
     }
 };

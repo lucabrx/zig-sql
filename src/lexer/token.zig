@@ -94,6 +94,10 @@ pub const TokenType = enum {
     avg,
     min,
     max,
+    between,
+    in,
+    like,
+    is,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -186,6 +190,10 @@ pub const TokenType = enum {
             .avg => "AVG",
             .min => "MIN",
             .max => "MAX",
+            .between => "BETWEEN",
+            .in => "IN",
+            .like => "LIKE",
+            .is => "IS",
         };
     }
 };
@@ -265,6 +273,10 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "AVG", .avg },
     .{ "MIN", .min },
     .{ "MAX", .max },
+    .{ "BETWEEN", .between },
+    .{ "IN", .in },
+    .{ "LIKE", .like },
+    .{ "IS", .is },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

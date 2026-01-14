@@ -20,6 +20,8 @@ pub const ParseError = error{
     ExpectedNullKeyword,
     ExpectedFrom,
     ExpectedBy,
+    ExpectedAnd,
+    ExpectedNull,
     InvalidInteger,
     InvalidFloat,
     InvalidIntegerLiteral,

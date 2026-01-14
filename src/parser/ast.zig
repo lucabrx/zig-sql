@@ -12,6 +12,41 @@ pub const Expression = union(enum) {
     unary_expression: *UnaryExpression,
     subquery: *SubqueryExpression,
     aggregate: *AggregateExpression,
+    between: *BetweenExpression,
+    in_list: *InListExpression,
+    in_subquery: *InSubqueryExpression,
+    like: *LikeExpression,
+    is_null: *IsNullExpression,
+};
+
+pub const BetweenExpression = struct {
+    expr: Expression,
+    low: Expression,
+    high: Expression,
+    negated: bool,
+};
+
+pub const InListExpression = struct {
+    expr: Expression,
+    list: []const Expression,
+    negated: bool,
+};
+
+pub const InSubqueryExpression = struct {
+    expr: Expression,
+    subquery: SelectStatement,
+    negated: bool,
+};
+
+pub const LikeExpression = struct {
+    expr: Expression,
+    pattern: Expression,
+    negated: bool,
+};
+
+pub const IsNullExpression = struct {
+    expr: Expression,
+    negated: bool,
 };
 
 pub const AggregateFunction = enum {

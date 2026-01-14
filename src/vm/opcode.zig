@@ -78,6 +78,12 @@ pub const Opcode = enum(u8) {
     agg_step,
     agg_final,
 
+    between,
+    in_list,
+    in_subquery,
+    like,
+    is_null,
+
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
             .init => "INIT",
@@ -132,6 +138,11 @@ pub const Opcode = enum(u8) {
             .agg_init => "AGG_INIT",
             .agg_step => "AGG_STEP",
             .agg_final => "AGG_FINAL",
+            .between => "BETWEEN",
+            .in_list => "IN_LIST",
+            .in_subquery => "IN_SUBQUERY",
+            .like => "LIKE",
+            .is_null => "IS_NULL",
         };
     }
 };

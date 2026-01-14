@@ -79,6 +79,36 @@ pub const RegisterValue = struct {
     }
 };
 
+fn match_like(text: []const u8, pattern: []const u8) bool {
+    var ti: usize = 0;
+    var pi: usize = 0;
+    var star_idx: ?usize = null;
+    var match_idx: usize = 0;
+
+    while (ti < text.len) {
+        if (pi < pattern.len and (pattern[pi] == '_' or pattern[pi] == text[ti])) {
+            ti += 1;
+            pi += 1;
+        } else if (pi < pattern.len and pattern[pi] == '%') {
+            star_idx = pi;
+            match_idx = ti;
+            pi += 1;
+        } else if (star_idx != null) {
+            pi = star_idx.? + 1;
+            match_idx += 1;
+            ti = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while (pi < pattern.len and pattern[pi] == '%') {
+        pi += 1;
+    }
+
+    return pi == pattern.len;
+}
+
 const AggState = struct {
     func: []const u8 = "",
     count: i64 = 0,
@@ -245,11 +275,17 @@ pub const VM = struct {
             .txn_set_isolation => try self.op_txn_set_isolation(inst),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .@"and", .@"or" => try self.op_logical(inst),
+            .not => self.op_not(inst),
             .subquery => try self.op_subquery(inst),
             .delete => try self.op_delete(inst),
             .agg_init => self.op_agg_init(inst),
             .agg_step => try self.op_agg_step(inst),
             .agg_final => try self.op_agg_final(inst),
+            .between => self.op_between(inst),
+            .in_list => try self.op_in_list(inst),
+            .in_subquery => try self.op_in_subquery(inst),
+            .like => self.op_like(inst),
+            .is_null => self.op_is_null(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -623,6 +659,15 @@ pub const VM = struct {
         self.pc += 1;
     }
 
+    fn op_not(self: *VM, inst: Instruction) void {
+        const src_reg: usize = @intCast(inst.p1);
+        const dest_reg: usize = @intCast(inst.p2);
+        const val = self.registers[src_reg];
+        const result = if (val.type == .integer) val.integer == 0 else true;
+        self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
     fn op_subquery(self: *VM, inst: Instruction) !void {
         const dest_reg: usize = @intCast(inst.p1);
 
@@ -661,6 +706,153 @@ pub const VM = struct {
         }
 
         self.pc += 1;
+    }
+
+    fn op_between(self: *VM, inst: Instruction) void {
+        const expr_reg: usize = @intCast(inst.p1);
+        const low_reg: usize = @intCast(inst.p2);
+        const high_reg: usize = @intCast(inst.p3);
+
+        const val = self.registers[expr_reg];
+        const low = self.registers[low_reg];
+        const high = self.registers[high_reg];
+
+        var result: bool = false;
+        if (val.type == .integer and low.type == .integer and high.type == .integer) {
+            result = val.integer >= low.integer and val.integer <= high.integer;
+        } else if (val.type == .text and low.type == .text and high.type == .text) {
+            const cmp_low = std.mem.order(u8, val.text, low.text);
+            const cmp_high = std.mem.order(u8, val.text, high.text);
+            result = (cmp_low == .gt or cmp_low == .eq) and (cmp_high == .lt or cmp_high == .eq);
+        }
+
+        self.registers[expr_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn op_in_list(self: *VM, inst: Instruction) !void {
+        const expr_reg: usize = @intCast(inst.p1);
+        const dest_reg: usize = @intCast(inst.p2);
+        const negated = inst.p3 != 0;
+
+        const val = self.registers[expr_reg];
+        var found = false;
+
+        if (inst.p5) |ptr| {
+            const ast = @import("../parser/ast.zig");
+            const in_list: *ast.InListExpression = @ptrCast(@alignCast(ptr));
+
+            for (in_list.list) |item| {
+                const item_val = self.eval_const_expr(item);
+                if (self.values_equal(val, item_val)) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        const result = if (negated) !found else found;
+        self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn op_in_subquery(self: *VM, inst: Instruction) !void {
+        const expr_reg: usize = @intCast(inst.p1);
+        const dest_reg: usize = @intCast(inst.p2);
+        const negated = inst.p3 != 0;
+
+        const val = self.registers[expr_reg];
+        var found = false;
+
+        if (inst.p5) |ptr| {
+            const ast = @import("../parser/ast.zig");
+            const Compiler = @import("../compiler/compiler.zig").Compiler;
+            const in_sub: *ast.InSubqueryExpression = @ptrCast(@alignCast(ptr));
+
+            var sub_compiler = Compiler.init(self.allocator, self.allocator, self.db);
+            defer sub_compiler.deinit();
+
+            const sub_instructions = sub_compiler.compile(ast.Statement{ .select_stmt = in_sub.subquery }) catch {
+                self.registers[dest_reg] = RegisterValue.init_integer(0);
+                self.pc += 1;
+                return;
+            };
+
+            var sub_vm = VM.init(self.allocator, self.db);
+            sub_vm.set_debug(false);
+            defer sub_vm.deinit();
+
+            sub_vm.load(sub_instructions);
+            if (sub_vm.run_subquery()) {
+                const sub_results = sub_vm.get_results();
+                for (sub_results) |row| {
+                    if (row.len > 0 and self.values_equal(val, row[0])) {
+                        found = true;
+                        break;
+                    }
+                }
+            } else |_| {}
+        }
+
+        const result = if (negated) !found else found;
+        self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn op_like(self: *VM, inst: Instruction) void {
+        const expr_reg: usize = @intCast(inst.p1);
+        const pattern_reg: usize = @intCast(inst.p2);
+        const dest_reg: usize = @intCast(inst.p3);
+        const negated = inst.p4.len > 0;
+
+        const val = self.registers[expr_reg];
+        const pattern = self.registers[pattern_reg];
+
+        var result = false;
+        if (val.type == .text and pattern.type == .text) {
+            result = match_like(val.text, pattern.text);
+        }
+
+        if (negated) result = !result;
+        self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn op_is_null(self: *VM, inst: Instruction) void {
+        const expr_reg: usize = @intCast(inst.p1);
+        const dest_reg: usize = @intCast(inst.p2);
+        const negated = inst.p3 != 0;
+
+        const val = self.registers[expr_reg];
+        var result = val.is_null or val.type == .null;
+
+        if (negated) result = !result;
+        self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn eval_const_expr(self: *VM, expr: @import("../parser/ast.zig").Expression) RegisterValue {
+        _ = self;
+        switch (expr) {
+            .integer_literal => |lit| return RegisterValue.init_integer(lit.value),
+            .string_literal => |lit| return RegisterValue.init_text(lit.value),
+            .null_literal => return RegisterValue.init_null(),
+            .boolean_literal => |lit| return RegisterValue.init_boolean(lit.value),
+            else => return RegisterValue.init_null(),
+        }
+    }
+
+    fn values_equal(self: *VM, a: RegisterValue, b: RegisterValue) bool {
+        _ = self;
+        if (a.type != b.type) return false;
+        return switch (a.type) {
+            .integer => a.integer == b.integer,
+            .text => std.mem.eql(u8, a.text, b.text),
+            .real => a.real == b.real,
+            .boolean => a.boolean == b.boolean,
+            .null => true,
+            else => false,
+        };
     }
 
     fn op_agg_init(self: *VM, inst: Instruction) void {

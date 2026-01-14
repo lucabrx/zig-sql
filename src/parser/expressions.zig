@@ -129,12 +129,133 @@ pub fn parse_comparison_expression(self: *Parser) ParseError!ast.Expression {
             };
             return left;
         },
+        token.TokenType.between => {
+            return try parse_between(self, left, false);
+        },
+        token.TokenType.in => {
+            return try parse_in(self, left, false);
+        },
+        token.TokenType.like => {
+            return try parse_like(self, left, false);
+        },
+        token.TokenType.is => {
+            return try parse_is_null(self, left);
+        },
+        token.TokenType.not => {
+            self.advance();
+            if (self.current.type == token.TokenType.between) {
+                return try parse_between(self, left, true);
+            } else if (self.current.type == token.TokenType.in) {
+                return try parse_in(self, left, true);
+            } else if (self.current.type == token.TokenType.like) {
+                return try parse_like(self, left, true);
+            }
+            return left;
+        },
         else => {
             return left;
         },
     }
 
     return left;
+}
+
+fn parse_between(self: *Parser, expr: ast.Expression, negated: bool) ParseError!ast.Expression {
+    self.advance();
+    const low = try parse_primary_expression(self);
+    if (!self.expect(token.TokenType.@"and")) {
+        return error.ExpectedAnd;
+    }
+    const high = try parse_primary_expression(self);
+
+    const between = self.allocator.create(ast.BetweenExpression) catch return error.OutOfMemory;
+    between.* = ast.BetweenExpression{
+        .expr = expr,
+        .low = low,
+        .high = high,
+        .negated = negated,
+    };
+    return ast.Expression{ .between = between };
+}
+
+fn parse_in(self: *Parser, expr: ast.Expression, negated: bool) ParseError!ast.Expression {
+    self.advance();
+    if (!self.expect(token.TokenType.lparen)) {
+        return error.ExpectedOpenParen;
+    }
+
+    if (self.current.type == token.TokenType.select) {
+        const select = @import("select.zig");
+        const subquery_stmt = try select.parse_select(self);
+        if (!self.expect(token.TokenType.rparen)) {
+            return error.ExpectedCloseParen;
+        }
+        const in_sub = self.allocator.create(ast.InSubqueryExpression) catch return error.OutOfMemory;
+        in_sub.* = ast.InSubqueryExpression{
+            .expr = expr,
+            .subquery = subquery_stmt,
+            .negated = negated,
+        };
+        return ast.Expression{ .in_subquery = in_sub };
+    }
+
+    var list = std.ArrayList(ast.Expression){};
+    defer list.deinit(self.allocator);
+
+    while (self.current.type != token.TokenType.rparen and self.current.type != token.TokenType.eof) {
+        const val = try parse_primary_expression(self);
+        try list.append(self.allocator, val);
+        if (self.current.type == token.TokenType.comma) {
+            self.advance();
+        } else {
+            break;
+        }
+    }
+
+    if (!self.expect(token.TokenType.rparen)) {
+        return error.ExpectedCloseParen;
+    }
+
+    const in_list = self.allocator.create(ast.InListExpression) catch return error.OutOfMemory;
+    in_list.* = ast.InListExpression{
+        .expr = expr,
+        .list = list.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
+        .negated = negated,
+    };
+    return ast.Expression{ .in_list = in_list };
+}
+
+fn parse_like(self: *Parser, expr: ast.Expression, negated: bool) ParseError!ast.Expression {
+    self.advance();
+    const pattern = try parse_primary_expression(self);
+
+    const like = self.allocator.create(ast.LikeExpression) catch return error.OutOfMemory;
+    like.* = ast.LikeExpression{
+        .expr = expr,
+        .pattern = pattern,
+        .negated = negated,
+    };
+    return ast.Expression{ .like = like };
+}
+
+fn parse_is_null(self: *Parser, expr: ast.Expression) ParseError!ast.Expression {
+    self.advance();
+    var negated = false;
+    if (self.current.type == token.TokenType.not) {
+        negated = true;
+        self.advance();
+    }
+    if (self.current.type != token.TokenType.null) {
+        return error.ExpectedNull;
+    }
+    self.advance();
+
+    const is_null = self.allocator.create(ast.IsNullExpression) catch return error.OutOfMemory;
+    is_null.* = ast.IsNullExpression{
+        .expr = expr,
+        .negated = negated,
+    };
+    return ast.Expression{ .is_null = is_null };
 }
 
 pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
