@@ -35,15 +35,29 @@ pub fn parse_insert(self: *Parser) ParserError!ast.InsertStatement {
         return error.UnexpectedToken;
     }
 
-    if (!self.expect(token.TokenType.lparen)) {
-        return error.ExpectedOpenParen;
+    var rows = std.ArrayList([]const ast.Expression){};
+    defer rows.deinit(self.allocator);
+
+    while (true) {
+        if (!self.expect(token.TokenType.lparen)) {
+            return error.ExpectedOpenParen;
+        }
+
+        const values = try parse_expression_list(self);
+        try rows.append(self.allocator, values);
+
+        if (!self.expect(token.TokenType.rparen)) {
+            return error.ExpectedCloseParen;
+        }
+
+        if (self.current.type == token.TokenType.comma) {
+            self.advance();
+        } else {
+            break;
+        }
     }
 
-    stmt.values = try parse_expression_list(self);
-
-    if (!self.expect(token.TokenType.rparen)) {
-        return error.ExpectedCloseParen;
-    }
+    stmt.value_rows = rows.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
 
     if (self.current.type == token.TokenType.semicolon) {
         self.advance();
@@ -115,9 +129,10 @@ test "parse insert statement" {
         try std.testing.expectEqualStrings("name", stmt.columns[0]);
         try std.testing.expectEqualStrings("age", stmt.columns[1]);
 
-        try std.testing.expectEqual(2, stmt.values.len);
-        try std.testing.expectEqualStrings("Alice", stmt.values[0].string_literal.value);
-        try std.testing.expectEqual(30, stmt.values[1].integer_literal.value);
+        try std.testing.expectEqual(1, stmt.value_rows.len);
+        try std.testing.expectEqual(2, stmt.value_rows[0].len);
+        try std.testing.expectEqualStrings("Alice", stmt.value_rows[0][0].string_literal.value);
+        try std.testing.expectEqual(30, stmt.value_rows[0][1].integer_literal.value);
     }
 
     {
@@ -131,9 +146,10 @@ test "parse insert statement" {
         try std.testing.expectEqualStrings("products", stmt.table);
         try std.testing.expectEqual(0, stmt.columns.len);
 
-        try std.testing.expectEqual(3, stmt.values.len);
-        try std.testing.expectEqual(1, stmt.values[0].integer_literal.value);
-        try std.testing.expectEqualStrings("Apple", stmt.values[1].string_literal.value);
-        try std.testing.expectApproxEqAbs(9.99, stmt.values[2].float_literal.value, 0.0001);
+        try std.testing.expectEqual(1, stmt.value_rows.len);
+        try std.testing.expectEqual(3, stmt.value_rows[0].len);
+        try std.testing.expectEqual(1, stmt.value_rows[0][0].integer_literal.value);
+        try std.testing.expectEqualStrings("Apple", stmt.value_rows[0][1].string_literal.value);
+        try std.testing.expectApproxEqAbs(9.99, stmt.value_rows[0][2].float_literal.value, 0.0001);
     }
 }

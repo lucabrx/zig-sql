@@ -287,6 +287,8 @@ pub const VM = struct {
             .like => self.op_like(inst),
             .is_null => self.op_is_null(inst),
             .case_expr => try self.op_case(inst),
+            .sort_results => self.op_sort_results(inst),
+            .limit_results => self.op_limit_results(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -869,6 +871,66 @@ pub const VM = struct {
             }
         } else {
             self.registers[dest_reg] = RegisterValue.init_null();
+        }
+
+        self.pc += 1;
+    }
+
+    fn op_sort_results(self: *VM, inst: Instruction) void {
+        const col_idx: usize = @intCast(inst.p1);
+        const desc = inst.p2 != 0;
+
+        const items = self.results.items;
+        if (items.len <= 1) {
+            self.pc += 1;
+            return;
+        }
+
+        const Context = struct {
+            col: usize,
+            descending: bool,
+
+            pub fn lessThan(ctx: @This(), a: []RegisterValue, b: []RegisterValue) bool {
+                if (ctx.col >= a.len or ctx.col >= b.len) return false;
+                const va = a[ctx.col];
+                const vb = b[ctx.col];
+
+                const result = switch (va.type) {
+                    .integer => if (vb.type == .integer) va.integer < vb.integer else false,
+                    .real => if (vb.type == .real) va.real < vb.real else false,
+                    .text => if (vb.type == .text) std.mem.order(u8, va.text, vb.text) == .lt else false,
+                    else => false,
+                };
+                return if (ctx.descending) !result else result;
+            }
+        };
+
+        std.mem.sort([]RegisterValue, items, Context{ .col = col_idx, .descending = desc }, Context.lessThan);
+        self.pc += 1;
+    }
+
+    fn op_limit_results(self: *VM, inst: Instruction) void {
+        const limit: usize = @intCast(inst.p1);
+        const offset: usize = @intCast(inst.p2);
+
+        if (offset > 0 and offset < self.results.items.len) {
+            for (0..offset) |i| {
+                self.allocator.free(self.results.items[i]);
+            }
+            std.mem.copyForwards([]RegisterValue, self.results.items[0..], self.results.items[offset..]);
+            self.results.shrinkRetainingCapacity(self.results.items.len - offset);
+        } else if (offset >= self.results.items.len) {
+            for (self.results.items) |r| {
+                self.allocator.free(r);
+            }
+            self.results.clearRetainingCapacity();
+        }
+
+        if (limit > 0 and limit < self.results.items.len) {
+            for (self.results.items[limit..]) |r| {
+                self.allocator.free(r);
+            }
+            self.results.shrinkRetainingCapacity(limit);
         }
 
         self.pc += 1;

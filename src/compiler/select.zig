@@ -151,6 +151,8 @@ fn compile_simple_select(c: *Compiler, stmt: SelectStatement) !void {
     } else {
         try compile_full_scan(c, stmt, schema, output_cols);
     }
+
+    try compile_order_limit(c, stmt, schema);
 }
 
 fn compile_join_select(c: *Compiler, stmt: SelectStatement) !void {
@@ -369,6 +371,20 @@ fn compile_join_expression(c: *Compiler, expr: Expression, tables: []const Table
             _ = try c.emit(.subquery, dest_reg, 0, 0, "", @ptrCast(subq_ptr));
         },
         else => {},
+    }
+}
+
+fn compile_order_limit(c: *Compiler, stmt: SelectStatement, schema: *const Schema) !void {
+    if (stmt.order_by.len > 0) {
+        const order = stmt.order_by[0];
+        const col_idx = schema.get_column_index(order.column) catch 0;
+        _ = try c.emit(.sort_results, @intCast(col_idx), if (order.desc) 1 else 0, 0, "", null);
+    }
+
+    if (stmt.limit != null or stmt.offset != null) {
+        const limit: i32 = if (stmt.limit) |l| @intCast(l) else 0;
+        const offset: i32 = if (stmt.offset) |o| @intCast(o) else 0;
+        _ = try c.emit(.limit_results, limit, offset, 0, "", null);
     }
 }
 

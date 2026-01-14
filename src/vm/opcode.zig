@@ -84,6 +84,8 @@ pub const Opcode = enum(u8) {
     like,
     is_null,
     case_expr,
+    sort_results,
+    limit_results,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -145,6 +147,8 @@ pub const Opcode = enum(u8) {
             .like => "LIKE",
             .is_null => "IS_NULL",
             .case_expr => "CASE",
+            .sort_results => "SORT_RESULTS",
+            .limit_results => "LIMIT_RESULTS",
         };
     }
 };

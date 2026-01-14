@@ -146,8 +146,8 @@ pub const OrderBy = struct {
 
 pub const InsertStatement = struct {
     table: []const u8,
-    columns: []const []const u8, // []string
-    values: []const Expression,
+    columns: []const []const u8,
+    value_rows: []const []const Expression,
 };
 
 pub const CreateTableStatement = struct {

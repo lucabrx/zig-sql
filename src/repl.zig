@@ -330,15 +330,18 @@ pub const REPL = struct {
                 for (insert_stmt.columns) |col| {
                     try self.writer.print("  - {s}\n", .{col});
                 }
-                try self.writer.writeAll("Values:\n");
-                for (insert_stmt.values) |val| {
-                    switch (val) {
-                        .integer_literal => |int_lit| try self.writer.print("  - {d}\n", .{int_lit.value}),
-                        .float_literal => |float_lit| try self.writer.print("  - {d}\n", .{float_lit.value}),
-                        .string_literal => |str_lit| try self.writer.print("  - '{s}'\n", .{str_lit.value}),
-                        .null_literal => try self.writer.writeAll("  - NULL\n"),
-                        .identifier => |ident| try self.writer.print("  - {s}\n", .{ident.name}),
-                        else => try self.writer.print("  - {any}\n", .{val}),
+                try self.writer.print("Value rows: {d}\n", .{insert_stmt.value_rows.len});
+                for (insert_stmt.value_rows, 0..) |row, row_idx| {
+                    try self.writer.print("  Row {d}:\n", .{row_idx});
+                    for (row) |val| {
+                        switch (val) {
+                            .integer_literal => |int_lit| try self.writer.print("    - {d}\n", .{int_lit.value}),
+                            .float_literal => |float_lit| try self.writer.print("    - {d}\n", .{float_lit.value}),
+                            .string_literal => |str_lit| try self.writer.print("    - '{s}'\n", .{str_lit.value}),
+                            .null_literal => try self.writer.writeAll("    - NULL\n"),
+                            .identifier => |ident| try self.writer.print("    - {s}\n", .{ident.name}),
+                            else => try self.writer.print("    - {any}\n", .{val}),
+                        }
                     }
                 }
             },
