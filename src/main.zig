@@ -15,7 +15,12 @@ pub fn main() !void {
     const writer = &stdout.interface;
     const reader = &stdin.interface;
 
-    var r = repl.REPL.init(allocator, ":memory:", writer, reader);
+    var args = std.process.args();
+    _ = args.skip();
+
+    const db_path = args.next() orelse ":memory:";
+
+    var r = repl.REPL.init(allocator, db_path, writer, reader);
     try r.run();
 }
 
