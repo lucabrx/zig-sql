@@ -20,6 +20,7 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
         .float_literal => |float_lit| {
             const float_ptr = c.allocator.create(f64) catch return CompileError.OutOfMemory;
             float_ptr.* = float_lit.value;
+            c.track_float(float_ptr) catch return CompileError.OutOfMemory;
             _ = try c.emit(.real, dest_reg, 0, 0, "", @ptrCast(float_ptr));
         },
         .string_literal => |str_lit| {

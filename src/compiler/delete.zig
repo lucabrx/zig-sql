@@ -49,12 +49,12 @@ test "compile delete without where" {
     var db = try DB.init(allocator, &pager);
     defer db.close();
 
-    const columns = [_]schema_mod.Column{
-        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-    };
-    const cols_slice: []schema_mod.Column = @constCast(&columns);
-    const schema = schema_mod.Schema.init("test", cols_slice);
-    _ = try db.create_table(&schema);
+    var columns = try allocator.alloc(schema_mod.Column, 1);
+    columns[0] = .{ .name = try allocator.dupe(u8, "id"), .type = .Integer, .primary_key = true, .not_null = true };
+
+    const schema_ptr = try allocator.create(schema_mod.Schema);
+    schema_ptr.* = schema_mod.Schema.init(try allocator.dupe(u8, "test"), columns);
+    _ = try db.create_table(schema_ptr);
 
     var compiler = Compiler.init(allocator, &db);
     defer compiler.deinit();

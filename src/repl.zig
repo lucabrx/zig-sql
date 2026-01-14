@@ -155,10 +155,12 @@ pub const REPL = struct {
 
     fn execute_statement(self: *REPL, input: []const u8) !void {
         const db = self.db orelse return error.DatabaseNotInitialized;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const temp_allocator = arena.allocator();
 
         var l = lexer.Lexer.init(input);
-        const tokens = try l.tokenize(self.allocator);
-        defer self.allocator.free(tokens);
+        const tokens = try l.tokenize(temp_allocator);
 
         if (tokens.len == 0) return;
 
@@ -170,7 +172,7 @@ pub const REPL = struct {
             }
         }
 
-        var p = parser.Parser.init(tokens, self.allocator);
+        var p = parser.Parser.init(tokens, temp_allocator);
         const stmt = p.parse() catch |err| {
             try self.writer.print("Parse error: {s}\n", .{@errorName(err)});
             if (p.hasErrors()) {
@@ -184,6 +186,7 @@ pub const REPL = struct {
             try self.print_ast(stmt);
         }
 
+        // Compiler uses main allocator for persistent data (schemas)
         var compiler = Compiler.init(self.allocator, db);
         defer compiler.deinit();
 

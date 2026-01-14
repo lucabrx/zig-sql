@@ -16,6 +16,7 @@ pub const Compiler = struct {
     instructions: std.ArrayList(Instruction),
     next_reg: i32,
     allocator: std.mem.Allocator,
+    float_ptrs: std.ArrayList(*f64),
 
     pub fn init(allocator: std.mem.Allocator, db: *DB) Compiler {
         return Compiler{
@@ -23,11 +24,20 @@ pub const Compiler = struct {
             .instructions = std.ArrayList(Instruction){},
             .next_reg = 0,
             .allocator = allocator,
+            .float_ptrs = std.ArrayList(*f64){},
         };
     }
 
     pub fn deinit(self: *Compiler) void {
+        for (self.float_ptrs.items) |ptr| {
+            self.allocator.destroy(ptr);
+        }
+        self.float_ptrs.deinit(self.allocator);
         self.instructions.deinit(self.allocator);
+    }
+
+    pub fn track_float(self: *Compiler, ptr: *f64) !void {
+        try self.float_ptrs.append(self.allocator, ptr);
     }
 
     pub fn compile(self: *Compiler, stmt: Statement) ![]Instruction {

@@ -477,12 +477,13 @@ test "vm insert and select with dynamic row" {
     var db = try storage.Database.init(allocator, &pager);
     defer db.close();
 
-    var columns = [_]storage.Column{
-        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-        .{ .name = "name", .type = .Text, .primary_key = false, .not_null = true },
-    };
-    const schema = storage.Schema.init("test_table", &columns);
-    _ = try db.create_table(&schema);
+    var columns = try allocator.alloc(storage.Column, 2);
+    columns[0] = .{ .name = try allocator.dupe(u8, "id"), .type = .Integer, .primary_key = true, .not_null = true };
+    columns[1] = .{ .name = try allocator.dupe(u8, "name"), .type = .Text, .primary_key = false, .not_null = true };
+
+    const schema_ptr = try allocator.create(storage.Schema);
+    schema_ptr.* = storage.Schema.init(try allocator.dupe(u8, "test_table"), columns);
+    _ = try db.create_table(schema_ptr);
 
     var vm = VM.init(allocator, &db);
     vm.set_debug(false);
@@ -499,16 +500,16 @@ test "vm insert and select with dynamic row" {
         storage.RowValue{ .integer = 1 },
         storage.RowValue{ .text = "alice" },
     };
-    try row.serialize_values(&schema, &values);
+    try row.serialize_values(schema_ptr, &values);
     try table.insert(1, &row);
 
     var cursor = try table.select_all();
     try std.testing.expect(!cursor.is_end());
 
-    const retrieved = try cursor.value(&schema);
-    const id_val = retrieved.get_value(&schema, 0);
+    const retrieved = try cursor.value(schema_ptr);
+    const id_val = retrieved.get_value(schema_ptr, 0);
     try std.testing.expectEqual(@as(i64, 1), id_val.integer);
 
-    const name_val = retrieved.get_value(&schema, 1);
+    const name_val = retrieved.get_value(schema_ptr, 1);
     try std.testing.expectEqualStrings("alice", name_val.text);
 }

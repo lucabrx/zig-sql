@@ -132,7 +132,17 @@ pub const Database = struct {
 
     pub fn drop_table(self: *Database, name: []const u8) !void {
         const kv = self.tables.fetchRemove(name) orelse return StorageError.TableNotFound;
-        self.allocator.destroy(kv.value);
+        const table = kv.value;
+
+        const schema = table.schema;
+        for (schema.columns) |col| {
+            self.allocator.free(col.name);
+        }
+        self.allocator.free(schema.columns);
+        self.allocator.free(schema.table_name);
+        self.allocator.destroy(@constCast(schema));
+
+        self.allocator.destroy(table);
         self.allocator.free(kv.key);
         print("[DB] Dropped table '{s}'\n", .{name});
     }
@@ -157,7 +167,17 @@ pub const Database = struct {
         self.save_metadata() catch {};
         var iter = self.tables.iterator();
         while (iter.next()) |entry| {
-            self.allocator.destroy(entry.value_ptr.*);
+            const table = entry.value_ptr.*;
+            // Free schema data
+            const schema = table.schema;
+            for (schema.columns) |col| {
+                self.allocator.free(col.name);
+            }
+            self.allocator.free(schema.columns);
+            self.allocator.free(schema.table_name);
+            self.allocator.destroy(@constCast(schema));
+
+            self.allocator.destroy(table);
             self.allocator.free(entry.key_ptr.*);
         }
         self.tables.deinit();
