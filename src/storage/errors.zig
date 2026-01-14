@@ -13,4 +13,5 @@ pub const StorageError = error{
     NullValueNotAllowed,
     TableNoPrimaryKey,
     InvalidDatabaseFile,
+    InvalidDefaultValue,
 };

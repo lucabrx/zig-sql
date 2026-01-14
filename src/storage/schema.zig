@@ -12,11 +12,22 @@ pub const Type = enum {
     Datetime, // Stored as i64 (unix timestamp)
 };
 
+pub const DefaultValue = union(enum) {
+    none: void,
+    integer: i64,
+    real: f64,
+    text: []const u8,
+    boolean: bool,
+    // Special defaults
+    current_timestamp: void, // For Date/Time/Datetime columns
+};
+
 pub const Column = struct {
     name: []const u8,
     type: Type,
     primary_key: bool,
     not_null: bool,
+    default: DefaultValue = .{ .none = {} },
 };
 
 pub const Schema = struct {
@@ -156,6 +167,52 @@ pub const DynamicRow = struct {
             .blob = null,
             .boolean = value,
         };
+    }
+
+    pub fn apply_defaults(self: *DynamicRow, schema: *const Schema) StorageError!void {
+        for (schema.columns, 0..) |col, i| {
+            if (self.values[i].is_null) {
+                switch (col.default) {
+                    .none => {},
+                    .integer => |v| {
+                        if (col.type != .Integer and col.type != .Date and col.type != .Time and col.type != .Datetime) {
+                            return StorageError.InvalidDefaultValue;
+                        }
+                        self.set_integer(i, v);
+                    },
+                    .real => |v| {
+                        if (col.type != .Real) {
+                            return StorageError.InvalidDefaultValue;
+                        }
+                        self.set_real(i, v);
+                    },
+                    .text => |v| {
+                        if (col.type != .Text and col.type != .Blob) {
+                            return StorageError.InvalidDefaultValue;
+                        }
+                        self.set_text(i, v);
+                    },
+                    .boolean => |v| {
+                        if (col.type != .Boolean) {
+                            return StorageError.InvalidDefaultValue;
+                        }
+                        self.set_boolean(i, v);
+                    },
+                    .current_timestamp => {
+                        if (col.type != .Date and col.type != .Time and col.type != .Datetime) {
+                            return StorageError.InvalidDefaultValue;
+                        }
+                        const now = std.time.timestamp();
+                        switch (col.type) {
+                            .Date => self.set_integer(i, @divFloor(now, 86400)), // days since epoch
+                            .Time => self.set_integer(i, @mod(now, 86400)), // seconds since midnight
+                            .Datetime => self.set_integer(i, now),
+                            else => return StorageError.InvalidDefaultValue,
+                        }
+                    },
+                }
+            }
+        }
     }
 
     pub fn get_integer(self: *DynamicRow, index: usize) StorageError!i64 {

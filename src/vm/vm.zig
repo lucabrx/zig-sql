@@ -389,7 +389,6 @@ pub const VM = struct {
         const start_reg: usize = @intCast(inst.p2);
         const num_cols: usize = @intCast(inst.p3);
 
-        // Validate NOT NULL constraints before inserting
         try self.validate_not_null_constraints(table, start_reg, num_cols);
 
         const key: u32 = @intCast(self.registers[start_reg].integer);
@@ -674,13 +673,9 @@ test "vm goto" {
     try std.testing.expectEqual(1, vm.registers[0].integer);
 }
 
-// Property-Based Tests for NULL Constraint Validation
-// **Feature: null-constraints, Property 1: NULL values in NOT NULL columns cause INSERT failure**
-// **Validates: Requirements 1.1, 1.2**
 test "property: NULL values in NOT NULL columns cause INSERT failure" {
     const allocator = std.testing.allocator;
 
-    // Run 100 iterations with different random seeds
     var prng = std.Random.DefaultPrng.init(12345);
     const random = prng.random();
 
@@ -691,7 +686,6 @@ test "property: NULL values in NOT NULL columns cause INSERT failure" {
         var db = try storage.Database.init(allocator, &pager);
         defer db.close();
 
-        // Create a schema with NOT NULL constraint on username column
         var columns = [_]storage.Column{
             .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
             .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
@@ -704,36 +698,26 @@ test "property: NULL values in NOT NULL columns cause INSERT failure" {
         vm.set_debug(false);
         defer vm.deinit();
 
-        // Generate a random column index (0, 1, or 2) to set to NULL
-        // We only care about NOT NULL columns (0 and 1)
         const null_col_idx = random.intRangeAtMost(usize, 0, 1);
 
-        // Set up registers - put NULL in a NOT NULL column
         vm.registers[0] = RegisterValue.init_integer(@intCast(iteration + 1)); // id
         vm.registers[1] = RegisterValue.init_text("testuser"); // username
         vm.registers[2] = RegisterValue.init_text("test@email.com"); // email
 
-        // Set the chosen NOT NULL column to NULL
         vm.registers[null_col_idx] = RegisterValue.init_null();
 
-        // Open the table for writing
         const table = try db.get_table("test_table");
         try vm.tables.put(0, table);
 
-        // Try to validate - should fail with NullConstraintViolation
         const result = vm.validate_not_null_constraints(table, 0, 3);
 
-        // Property: inserting NULL into a NOT NULL column MUST fail
         try std.testing.expectError(VmErrors.NullConstraintViolation, result);
     }
 }
 
-// **Feature: null-constraints, Property 2: Valid INSERT with all NOT NULL columns satisfied succeeds**
-// **Validates: Requirements 1.3**
 test "property: Valid INSERT with all NOT NULL columns satisfied succeeds" {
     const allocator = std.testing.allocator;
 
-    // Run 100 iterations with different random seeds
     var prng = std.Random.DefaultPrng.init(67890);
     const random = prng.random();
 
@@ -744,7 +728,6 @@ test "property: Valid INSERT with all NOT NULL columns satisfied succeeds" {
         var db = try storage.Database.init(allocator, &pager);
         defer db.close();
 
-        // Create a schema with NOT NULL constraints
         var columns = [_]storage.Column{
             .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
             .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
@@ -757,33 +740,23 @@ test "property: Valid INSERT with all NOT NULL columns satisfied succeeds" {
         vm.set_debug(false);
         defer vm.deinit();
 
-        // Generate random valid values for all NOT NULL columns
         const id: i64 = @intCast(iteration + 1);
         vm.registers[0] = RegisterValue.init_integer(id);
         vm.registers[1] = RegisterValue.init_text("testuser");
 
-        // Randomly decide if email should be NULL or have a value (it's nullable)
         if (random.boolean()) {
             vm.registers[2] = RegisterValue.init_text("test@email.com");
         } else {
             vm.registers[2] = RegisterValue.init_null();
         }
 
-        // Open the table for writing
         const table = try db.get_table("test_table");
         try vm.tables.put(0, table);
 
-        // Property: inserting valid non-NULL values into all NOT NULL columns MUST succeed
-        // If this fails, the test will fail with an error
         try vm.validate_not_null_constraints(table, 0, 3);
     }
 }
 
-// Unit Tests for NULL Constraint Validation
-// **Feature: null-constraints**
-
-// Test 4.1: INSERT with explicit NULL into NOT NULL column
-// **Validates: Requirements 1.1**
 test "unit: INSERT with explicit NULL into NOT NULL column fails" {
     const allocator = std.testing.allocator;
     var pager = try storage.Pager.init(allocator, ":memory:");
@@ -792,7 +765,6 @@ test "unit: INSERT with explicit NULL into NOT NULL column fails" {
     var db = try storage.Database.init(allocator, &pager);
     defer db.close();
 
-    // Create a schema with NOT NULL constraint on username column
     var columns = [_]storage.Column{
         .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
         .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
@@ -805,22 +777,17 @@ test "unit: INSERT with explicit NULL into NOT NULL column fails" {
     vm.set_debug(false);
     defer vm.deinit();
 
-    // Set up registers with explicit NULL in NOT NULL column (username)
-    vm.registers[0] = RegisterValue.init_integer(1); // id - valid
-    vm.registers[1] = RegisterValue.init_null(); // username - explicit NULL (NOT NULL column)
-    vm.registers[2] = RegisterValue.init_text("test@email.com"); // email - valid
+    vm.registers[0] = RegisterValue.init_integer(1);
+    vm.registers[1] = RegisterValue.init_null();
+    vm.registers[2] = RegisterValue.init_text("test@email.com");
 
-    // Open the table for writing
     const table = try db.get_table("test_table");
     try vm.tables.put(0, table);
 
-    // Validate should fail with NullConstraintViolation
     const result = vm.validate_not_null_constraints(table, 0, 3);
     try std.testing.expectError(VmErrors.NullConstraintViolation, result);
 }
 
-// Test 4.2: INSERT with omitted NOT NULL column (defaults to NULL)
-// **Validates: Requirements 1.2**
 test "unit: INSERT with omitted NOT NULL column fails" {
     const allocator = std.testing.allocator;
     var pager = try storage.Pager.init(allocator, ":memory:");
@@ -829,7 +796,6 @@ test "unit: INSERT with omitted NOT NULL column fails" {
     var db = try storage.Database.init(allocator, &pager);
     defer db.close();
 
-    // Create a schema with NOT NULL constraint on username column
     var columns = [_]storage.Column{
         .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
         .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
@@ -842,22 +808,15 @@ test "unit: INSERT with omitted NOT NULL column fails" {
     vm.set_debug(false);
     defer vm.deinit();
 
-    // Set up registers - only provide id, username is omitted (register stays at default null)
     vm.registers[0] = RegisterValue.init_integer(1); // id - valid
-    // vm.registers[1] is not set - defaults to null (omitted NOT NULL column)
-    // vm.registers[2] is not set - defaults to null (nullable column, OK)
 
-    // Open the table for writing
     const table = try db.get_table("test_table");
     try vm.tables.put(0, table);
 
-    // Validate should fail because username (NOT NULL) is omitted/null
     const result = vm.validate_not_null_constraints(table, 0, 3);
     try std.testing.expectError(VmErrors.NullConstraintViolation, result);
 }
 
-// Test 4.3: INSERT with all valid values succeeds
-// **Validates: Requirements 1.3**
 test "unit: INSERT with all valid values succeeds" {
     const allocator = std.testing.allocator;
     var pager = try storage.Pager.init(allocator, ":memory:");
@@ -866,7 +825,6 @@ test "unit: INSERT with all valid values succeeds" {
     var db = try storage.Database.init(allocator, &pager);
     defer db.close();
 
-    // Create a schema with NOT NULL constraints
     var columns = [_]storage.Column{
         .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
         .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
@@ -879,21 +837,16 @@ test "unit: INSERT with all valid values succeeds" {
     vm.set_debug(false);
     defer vm.deinit();
 
-    // Set up registers with all valid non-NULL values for NOT NULL columns
-    vm.registers[0] = RegisterValue.init_integer(1); // id - valid
-    vm.registers[1] = RegisterValue.init_text("testuser"); // username - valid
-    vm.registers[2] = RegisterValue.init_text("test@email.com"); // email - valid (nullable)
+    vm.registers[0] = RegisterValue.init_integer(1);
+    vm.registers[1] = RegisterValue.init_text("testuser");
+    vm.registers[2] = RegisterValue.init_text("test@email.com");
 
-    // Open the table for writing
     const table = try db.get_table("test_table");
     try vm.tables.put(0, table);
 
-    // Validate should succeed - no error expected
     try vm.validate_not_null_constraints(table, 0, 3);
 }
 
-// Additional test: INSERT with NULL in nullable column succeeds
-// **Validates: Requirements 1.3 (edge case)**
 test "unit: INSERT with NULL in nullable column succeeds" {
     const allocator = std.testing.allocator;
     var pager = try storage.Pager.init(allocator, ":memory:");
@@ -902,7 +855,6 @@ test "unit: INSERT with NULL in nullable column succeeds" {
     var db = try storage.Database.init(allocator, &pager);
     defer db.close();
 
-    // Create a schema with NOT NULL constraints
     var columns = [_]storage.Column{
         .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
         .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
@@ -915,15 +867,11 @@ test "unit: INSERT with NULL in nullable column succeeds" {
     vm.set_debug(false);
     defer vm.deinit();
 
-    // Set up registers - NOT NULL columns have valid values, nullable column is NULL
-    vm.registers[0] = RegisterValue.init_integer(1); // id - valid
-    vm.registers[1] = RegisterValue.init_text("testuser"); // username - valid
-    vm.registers[2] = RegisterValue.init_null(); // email - NULL (allowed, column is nullable)
-
-    // Open the table for writing
+    vm.registers[0] = RegisterValue.init_integer(1);
+    vm.registers[1] = RegisterValue.init_text("testuser");
+    vm.registers[2] = RegisterValue.init_null();
     const table = try db.get_table("test_table");
     try vm.tables.put(0, table);
 
-    // Validate should succeed - NULL in nullable column is allowed
     try vm.validate_not_null_constraints(table, 0, 3);
 }
