@@ -383,6 +383,44 @@ pub const VM = struct {
         }
     }
 
+    fn validate_type_constraints(
+        self: *VM,
+        table: *storage.Table,
+        start_reg: usize,
+        num_cols: usize,
+    ) !void {
+        const schema = table.schema;
+        const cols_to_check = @min(num_cols, schema.columns.len);
+
+        for (0..cols_to_check) |i| {
+            const col = schema.columns[i];
+            const reg = self.registers[start_reg + i];
+
+            if (reg.type == .null or reg.is_null) {
+                continue;
+            }
+
+            const valid = switch (col.type) {
+                .Integer, .Date, .Time, .Datetime => reg.type == .integer,
+                .Real => reg.type == .real or reg.type == .integer, // Allow int -> real coercion
+                .Text => reg.type == .text,
+                .Blob => reg.type == .blob or reg.type == .text, // Allow text -> blob
+                .Boolean => reg.type == .boolean or reg.type == .integer, // Allow int -> bool (0/1)
+            };
+
+            if (!valid) {
+                if (self.debug) {
+                    print("[VM] Type mismatch: column '{s}' expects {s}, got {s}\n", .{
+                        col.name,
+                        @tagName(col.type),
+                        @tagName(reg.type),
+                    });
+                }
+                return VmErrors.TypeMismatch;
+            }
+        }
+    }
+
     fn op_insert(self: *VM, inst: Instruction) !void {
         const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
 
@@ -390,6 +428,7 @@ pub const VM = struct {
         const num_cols: usize = @intCast(inst.p3);
 
         try self.validate_not_null_constraints(table, start_reg, num_cols);
+        try self.validate_type_constraints(table, start_reg, num_cols);
 
         const key: u32 = @intCast(self.registers[start_reg].integer);
 

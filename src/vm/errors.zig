@@ -7,4 +7,5 @@ pub const VmErrors = error{
     NoCursor,
     NoTable,
     NullConstraintViolation,
+    TypeMismatch,
 };
