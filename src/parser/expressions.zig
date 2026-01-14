@@ -39,12 +39,12 @@ pub fn parse_and_expression(self: *Parser) ParseError!ast.Expression {
 }
 
 pub fn parse_comparison_expression(self: *Parser) ParseError!ast.Expression {
-    var left = try parse_primary_expression(self);
+    var left = try parse_additive_expression(self);
 
     switch (self.current.type) {
         token.TokenType.eq => {
             self.advance();
-            const right = try parse_primary_expression(self);
+            const right = try parse_additive_expression(self);
             const binary = self.allocator.create(ast.BinaryExpression) catch return error.OutOfMemory;
             binary.* = ast.BinaryExpression{
                 .left = left,
@@ -59,7 +59,7 @@ pub fn parse_comparison_expression(self: *Parser) ParseError!ast.Expression {
         },
         token.TokenType.neq => {
             self.advance();
-            const right = try parse_primary_expression(self);
+            const right = try parse_additive_expression(self);
             const binary = self.allocator.create(ast.BinaryExpression) catch return error.OutOfMemory;
             binary.* = ast.BinaryExpression{
                 .left = left,
@@ -74,7 +74,7 @@ pub fn parse_comparison_expression(self: *Parser) ParseError!ast.Expression {
         },
         token.TokenType.lt => {
             self.advance();
-            const right = try parse_primary_expression(self);
+            const right = try parse_additive_expression(self);
             const binary = self.allocator.create(ast.BinaryExpression) catch return error.OutOfMemory;
             binary.* = ast.BinaryExpression{
                 .left = left,
@@ -89,7 +89,7 @@ pub fn parse_comparison_expression(self: *Parser) ParseError!ast.Expression {
         },
         token.TokenType.lte => {
             self.advance();
-            const right = try parse_primary_expression(self);
+            const right = try parse_additive_expression(self);
             const binary = self.allocator.create(ast.BinaryExpression) catch return error.OutOfMemory;
             binary.* = ast.BinaryExpression{
                 .left = left,
@@ -103,7 +103,7 @@ pub fn parse_comparison_expression(self: *Parser) ParseError!ast.Expression {
         },
         token.TokenType.gt => {
             self.advance();
-            const right = try parse_primary_expression(self);
+            const right = try parse_additive_expression(self);
             const binary = self.allocator.create(ast.BinaryExpression) catch return error.OutOfMemory;
             binary.* = ast.BinaryExpression{
                 .left = left,
@@ -117,7 +117,7 @@ pub fn parse_comparison_expression(self: *Parser) ParseError!ast.Expression {
         },
         token.TokenType.gte => {
             self.advance();
-            const right = try parse_primary_expression(self);
+            const right = try parse_additive_expression(self);
             const binary = self.allocator.create(ast.BinaryExpression) catch return error.OutOfMemory;
             binary.* = ast.BinaryExpression{
                 .left = left,
@@ -157,6 +157,42 @@ pub fn parse_comparison_expression(self: *Parser) ParseError!ast.Expression {
         },
     }
 
+    return left;
+}
+
+fn parse_additive_expression(self: *Parser) ParseError!ast.Expression {
+    var left = try parse_multiplicative_expression(self);
+
+    while (self.current.type == .plus or self.current.type == .minus) {
+        const op = if (self.current.type == .plus) "+" else "-";
+        self.advance();
+        const right = try parse_multiplicative_expression(self);
+        const binary = self.allocator.create(ast.BinaryExpression) catch return error.OutOfMemory;
+        binary.* = ast.BinaryExpression{
+            .left = left,
+            .operator = op,
+            .right = right,
+        };
+        left = ast.Expression{ .binary_expression = binary };
+    }
+    return left;
+}
+
+fn parse_multiplicative_expression(self: *Parser) ParseError!ast.Expression {
+    var left = try parse_primary_expression(self);
+
+    while (self.current.type == .asterisk or self.current.type == .slash) {
+        const op = if (self.current.type == .asterisk) "*" else "/";
+        self.advance();
+        const right = try parse_primary_expression(self);
+        const binary = self.allocator.create(ast.BinaryExpression) catch return error.OutOfMemory;
+        binary.* = ast.BinaryExpression{
+            .left = left,
+            .operator = op,
+            .right = right,
+        };
+        left = ast.Expression{ .binary_expression = binary };
+    }
     return left;
 }
 

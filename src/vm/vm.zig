@@ -276,6 +276,7 @@ pub const VM = struct {
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .@"and", .@"or" => try self.op_logical(inst),
             .not => self.op_not(inst),
+            .add, .sub, .mul, .div => self.op_arithmetic(inst),
             .subquery => try self.op_subquery(inst),
             .delete => try self.op_delete(inst),
             .agg_init => self.op_agg_init(inst),
@@ -675,6 +676,37 @@ pub const VM = struct {
         const val = self.registers[src_reg];
         const result = if (val.type == .integer) val.integer == 0 else true;
         self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
+        self.pc += 1;
+    }
+
+    fn op_arithmetic(self: *VM, inst: Instruction) void {
+        const left = self.registers[@intCast(inst.p1)];
+        const right = self.registers[@intCast(inst.p2)];
+        const dest_reg: usize = @intCast(inst.p3);
+
+        if (left.type == .integer and right.type == .integer) {
+            const result: i64 = switch (inst.op) {
+                .add => left.integer + right.integer,
+                .sub => left.integer - right.integer,
+                .mul => left.integer * right.integer,
+                .div => if (right.integer != 0) @divTrunc(left.integer, right.integer) else 0,
+                else => 0,
+            };
+            self.registers[dest_reg] = RegisterValue.init_integer(result);
+        } else if ((left.type == .real or left.type == .integer) and (right.type == .real or right.type == .integer)) {
+            const l: f64 = if (left.type == .real) left.real else @floatFromInt(left.integer);
+            const r: f64 = if (right.type == .real) right.real else @floatFromInt(right.integer);
+            const result: f64 = switch (inst.op) {
+                .add => l + r,
+                .sub => l - r,
+                .mul => l * r,
+                .div => if (r != 0) l / r else 0,
+                else => 0,
+            };
+            self.registers[dest_reg] = RegisterValue.init_real(result);
+        } else {
+            self.registers[dest_reg] = RegisterValue.init_null();
+        }
         self.pc += 1;
     }
 

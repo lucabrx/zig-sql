@@ -4,12 +4,12 @@ const ast = @import("../parser/ast.zig");
 const Expression = ast.Expression;
 const Schema = @import("../storage/schema.zig").Schema;
 
-const CompileError = error{OutOfMemory};
+const CompileError = error{ OutOfMemory, ColumnNotFound };
 
 pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema: ?*const Schema) CompileError!void {
     switch (expr) {
         .identifier => |ident| {
-            const col_idx = if (schema) |s| get_schema_column_index(s, ident.name) else get_column_index(ident.name);
+            const col_idx = if (schema) |s| try get_schema_column_index(s, ident.name) else return CompileError.ColumnNotFound;
             _ = try c.emit(.column, 0, col_idx, dest_reg, "", null);
         },
         .integer_literal => |int_lit| {
@@ -176,20 +176,13 @@ fn compile_is_null(c: *Compiler, isn: *ast.IsNullExpression, dest_reg: i32, sche
     _ = try c.emit(.is_null, expr_reg, dest_reg, if (isn.negated) 1 else 0, "", null);
 }
 
-fn get_column_index(name: []const u8) i32 {
-    if (std.mem.eql(u8, name, "id")) return 0;
-    if (std.mem.eql(u8, name, "username")) return 1;
-    if (std.mem.eql(u8, name, "email")) return 2;
-    return 0;
-}
-
-fn get_schema_column_index(schema: *const Schema, name: []const u8) i32 {
+fn get_schema_column_index(schema: *const Schema, name: []const u8) CompileError!i32 {
     for (schema.columns, 0..) |col, i| {
         if (std.mem.eql(u8, col.name, name)) {
             return @intCast(i);
         }
     }
-    return 0;
+    return CompileError.ColumnNotFound;
 }
 
 fn compile_case(c: *Compiler, case: *ast.CaseExpression, dest_reg: i32, schema: ?*const Schema) CompileError!void {
