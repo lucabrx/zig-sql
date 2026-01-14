@@ -454,6 +454,16 @@ pub const REPL = struct {
                 try self.format_expression(unary_expr.right);
             },
             .subquery => try self.writer.writeAll("(SUBQUERY)"),
+            .aggregate => |agg| {
+                const func_name = switch (agg.function) {
+                    .count => "COUNT",
+                    .sum => "SUM",
+                    .avg => "AVG",
+                    .min => "MIN",
+                    .max => "MAX",
+                };
+                try self.writer.print("{s}(...)", .{func_name});
+            },
         }
     }
 };

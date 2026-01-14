@@ -87,6 +87,12 @@ pub const TokenType = enum {
     cross,
     outer,
     distinct,
+    group,
+    count,
+    sum,
+    avg,
+    min,
+    max,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -172,6 +178,12 @@ pub const TokenType = enum {
             .cross => "CROSS",
             .outer => "OUTER",
             .distinct => "DISTINCT",
+            .group => "GROUP",
+            .count => "COUNT",
+            .sum => "SUM",
+            .avg => "AVG",
+            .min => "MIN",
+            .max => "MAX",
         };
     }
 };
@@ -244,6 +256,12 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "CROSS", .cross },
     .{ "OUTER", .outer },
     .{ "DISTINCT", .distinct },
+    .{ "GROUP", .group },
+    .{ "COUNT", .count },
+    .{ "SUM", .sum },
+    .{ "AVG", .avg },
+    .{ "MIN", .min },
+    .{ "MAX", .max },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

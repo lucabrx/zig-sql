@@ -11,6 +11,21 @@ pub const Expression = union(enum) {
     binary_expression: *BinaryExpression,
     unary_expression: *UnaryExpression,
     subquery: *SubqueryExpression,
+    aggregate: *AggregateExpression,
+};
+
+pub const AggregateFunction = enum {
+    count,
+    sum,
+    avg,
+    min,
+    max,
+};
+
+pub const AggregateExpression = struct {
+    function: AggregateFunction,
+    arg: ?Expression,
+    distinct: bool,
 };
 
 pub const SubqueryExpression = struct {
@@ -47,6 +62,7 @@ pub const SelectStatement = struct {
     from: []const u8,
     joins: []const JoinClause,
     where: ?Expression,
+    group_by: []const []const u8,
     order_by: []const OrderBy,
     limit: ?i64,
     offset: ?i64,
@@ -203,6 +219,7 @@ test "usage example" {
             .from = "users",
             .joins = &[_]JoinClause{},
             .where = Expression{ .binary_expression = bin_expr },
+            .group_by = &[_][]const u8{},
             .order_by = &[_]OrderBy{},
             .limit = 10,
             .offset = null,

@@ -43,6 +43,9 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
         .subquery => |subq| {
             try compile_subquery(c, subq, dest_reg);
         },
+        .aggregate => {
+            _ = try c.emit(.null, dest_reg, 0, 0, "", null);
+        },
     }
 }
 

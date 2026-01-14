@@ -274,11 +274,55 @@ pub fn parse_primary_expression(self: *Parser) ParseError!ast.Expression {
             }
             return expr;
         },
+        token.TokenType.count, token.TokenType.sum, token.TokenType.avg, token.TokenType.min, token.TokenType.max => {
+            return try parse_aggregate(self);
+        },
         else => {
             self.addError("Unexpected token in expression: '{s}'", .{@tagName(self.current.type)});
             return error.UnexpectedToken;
         },
     }
+}
+
+fn parse_aggregate(self: *Parser) ParseError!ast.Expression {
+    const func = switch (self.current.type) {
+        token.TokenType.count => ast.AggregateFunction.count,
+        token.TokenType.sum => ast.AggregateFunction.sum,
+        token.TokenType.avg => ast.AggregateFunction.avg,
+        token.TokenType.min => ast.AggregateFunction.min,
+        token.TokenType.max => ast.AggregateFunction.max,
+        else => return error.UnexpectedToken,
+    };
+    self.advance();
+
+    if (!self.expect(token.TokenType.lparen)) {
+        return error.ExpectedOpenParen;
+    }
+
+    var is_distinct = false;
+    if (self.current.type == token.TokenType.distinct) {
+        is_distinct = true;
+        self.advance();
+    }
+
+    var arg: ?ast.Expression = null;
+    if (self.current.type == token.TokenType.asterisk) {
+        self.advance();
+    } else if (self.current.type != token.TokenType.rparen) {
+        arg = try parse_or_expression(self);
+    }
+
+    if (!self.expect(token.TokenType.rparen)) {
+        return error.ExpectedCloseParen;
+    }
+
+    const agg = self.allocator.create(ast.AggregateExpression) catch return error.OutOfMemory;
+    agg.* = ast.AggregateExpression{
+        .function = func,
+        .arg = arg,
+        .distinct = is_distinct,
+    };
+    return ast.Expression{ .aggregate = agg };
 }
 
 const lexer = @import("../lexer/lexer.zig");

@@ -74,6 +74,10 @@ pub const Opcode = enum(u8) {
 
     subquery,
 
+    agg_init,
+    agg_step,
+    agg_final,
+
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
             .init => "INIT",
@@ -125,6 +129,9 @@ pub const Opcode = enum(u8) {
             .txn_rollback_to => "TXN_ROLLBACK_TO",
             .txn_set_isolation => "TXN_SET_ISOLATION",
             .subquery => "SUBQUERY",
+            .agg_init => "AGG_INIT",
+            .agg_step => "AGG_STEP",
+            .agg_final => "AGG_FINAL",
         };
     }
 };

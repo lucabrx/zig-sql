@@ -79,6 +79,14 @@ pub const RegisterValue = struct {
     }
 };
 
+const AggState = struct {
+    func: []const u8 = "",
+    count: i64 = 0,
+    sum: f64 = 0,
+    min: ?RegisterValue = null,
+    max: ?RegisterValue = null,
+};
+
 pub const VM = struct {
     db: *storage.Database,
     program: []const Instruction = &[_]Instruction{},
@@ -93,6 +101,10 @@ pub const VM = struct {
     index_rowids: std.ArrayList(u32),
     index_pos: usize = 0,
     seen_rows: std.AutoHashMap(u64, void),
+    agg_groups: std.AutoHashMap(u64, []AggState),
+    num_aggs: usize = 0,
+    num_group_cols: usize = 0,
+    group_keys: std.AutoHashMap(u64, []RegisterValue),
 
     pub fn init(allocator: std.mem.Allocator, db: *storage.Database) VM {
         return VM{
@@ -104,6 +116,10 @@ pub const VM = struct {
             .index_rowids = std.ArrayList(u32){},
             .index_pos = 0,
             .seen_rows = std.AutoHashMap(u64, void).init(allocator),
+            .agg_groups = std.AutoHashMap(u64, []AggState).init(allocator),
+            .num_aggs = 0,
+            .num_group_cols = 0,
+            .group_keys = std.AutoHashMap(u64, []RegisterValue).init(allocator),
         };
     }
 
@@ -116,6 +132,16 @@ pub const VM = struct {
         self.results.deinit(self.allocator);
         self.index_rowids.deinit(self.allocator);
         self.seen_rows.deinit();
+        var agg_iter = self.agg_groups.valueIterator();
+        while (agg_iter.next()) |states| {
+            self.allocator.free(states.*);
+        }
+        self.agg_groups.deinit();
+        var key_iter = self.group_keys.valueIterator();
+        while (key_iter.next()) |keys| {
+            self.allocator.free(keys.*);
+        }
+        self.group_keys.deinit();
     }
 
     pub fn set_debug(self: *VM, enabled: bool) void {
@@ -221,6 +247,9 @@ pub const VM = struct {
             .@"and", .@"or" => try self.op_logical(inst),
             .subquery => try self.op_subquery(inst),
             .delete => try self.op_delete(inst),
+            .agg_init => self.op_agg_init(inst),
+            .agg_step => try self.op_agg_step(inst),
+            .agg_final => try self.op_agg_final(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -629,6 +658,147 @@ pub const VM = struct {
             }
         } else {
             self.registers[dest_reg] = RegisterValue.init_null();
+        }
+
+        self.pc += 1;
+    }
+
+    fn op_agg_init(self: *VM, inst: Instruction) void {
+        self.num_aggs = @intCast(inst.p1);
+        self.num_group_cols = @intCast(inst.p2);
+        self.agg_groups.clearRetainingCapacity();
+        var key_iter = self.group_keys.valueIterator();
+        while (key_iter.next()) |keys| {
+            self.allocator.free(keys.*);
+        }
+        self.group_keys.clearRetainingCapacity();
+        self.pc += 1;
+    }
+
+    fn op_agg_step(self: *VM, inst: Instruction) !void {
+        const agg_idx: usize = @intCast(inst.p1);
+        const val_reg: usize = @intCast(inst.p2);
+        const group_key_start: usize = @intCast(inst.p3);
+
+        var hasher = std.hash.Wyhash.init(0);
+        for (0..self.num_group_cols) |i| {
+            const reg = self.registers[group_key_start + i];
+            hasher.update(std.mem.asBytes(&reg.type));
+            switch (reg.type) {
+                .integer => hasher.update(std.mem.asBytes(&reg.integer)),
+                .text => hasher.update(reg.text),
+                else => {},
+            }
+        }
+        const group_hash = hasher.final();
+
+        const gop = try self.agg_groups.getOrPut(group_hash);
+        if (!gop.found_existing) {
+            const states = try self.allocator.alloc(AggState, self.num_aggs);
+            for (states) |*s| {
+                s.* = AggState{};
+            }
+            gop.value_ptr.* = states;
+
+            const keys = try self.allocator.alloc(RegisterValue, self.num_group_cols);
+            for (0..self.num_group_cols) |i| {
+                keys[i] = self.registers[group_key_start + i];
+            }
+            try self.group_keys.put(group_hash, keys);
+        }
+
+        const states = gop.value_ptr.*;
+        const val = self.registers[val_reg];
+        const func_name = inst.p4;
+
+        states[agg_idx].func = func_name;
+
+        if (std.mem.eql(u8, func_name, "count")) {
+            states[agg_idx].count += 1;
+        } else if (std.mem.eql(u8, func_name, "sum")) {
+            if (val.type == .integer) {
+                states[agg_idx].sum += @floatFromInt(val.integer);
+            } else if (val.type == .real) {
+                states[agg_idx].sum += val.real;
+            }
+            states[agg_idx].count += 1;
+        } else if (std.mem.eql(u8, func_name, "avg")) {
+            if (val.type == .integer) {
+                states[agg_idx].sum += @floatFromInt(val.integer);
+            } else if (val.type == .real) {
+                states[agg_idx].sum += val.real;
+            }
+            states[agg_idx].count += 1;
+        } else if (std.mem.eql(u8, func_name, "min")) {
+            if (states[agg_idx].min == null) {
+                states[agg_idx].min = val;
+            } else if (val.type == .integer and states[agg_idx].min.?.type == .integer) {
+                if (val.integer < states[agg_idx].min.?.integer) {
+                    states[agg_idx].min = val;
+                }
+            }
+        } else if (std.mem.eql(u8, func_name, "max")) {
+            if (states[agg_idx].max == null) {
+                states[agg_idx].max = val;
+            } else if (val.type == .integer and states[agg_idx].max.?.type == .integer) {
+                if (val.integer > states[agg_idx].max.?.integer) {
+                    states[agg_idx].max = val;
+                }
+            }
+        }
+
+        self.pc += 1;
+    }
+
+    fn op_agg_final(self: *VM, inst: Instruction) !void {
+        const num_group_cols: usize = @intCast(inst.p2);
+
+        var iter = self.agg_groups.iterator();
+        while (iter.next()) |entry| {
+            const group_hash = entry.key_ptr.*;
+            const states = entry.value_ptr.*;
+            const group_keys = self.group_keys.get(group_hash) orelse continue;
+
+            const num_cols = num_group_cols + self.num_aggs;
+            const result = try self.allocator.alloc(RegisterValue, num_cols);
+
+            for (0..num_group_cols) |i| {
+                result[i] = group_keys[i];
+            }
+
+            for (states, 0..) |state, i| {
+                const col_idx = num_group_cols + i;
+                if (std.mem.eql(u8, state.func, "min")) {
+                    result[col_idx] = state.min orelse RegisterValue.init_null();
+                } else if (std.mem.eql(u8, state.func, "max")) {
+                    result[col_idx] = state.max orelse RegisterValue.init_null();
+                } else if (std.mem.eql(u8, state.func, "avg")) {
+                    if (state.count > 0) {
+                        const avg = state.sum / @as(f64, @floatFromInt(state.count));
+                        result[col_idx] = RegisterValue.init_real(avg);
+                    } else {
+                        result[col_idx] = RegisterValue.init_null();
+                    }
+                } else if (std.mem.eql(u8, state.func, "sum")) {
+                    if (state.sum == @trunc(state.sum)) {
+                        result[col_idx] = RegisterValue.init_integer(@intFromFloat(state.sum));
+                    } else {
+                        result[col_idx] = RegisterValue.init_real(state.sum);
+                    }
+                } else {
+                    result[col_idx] = RegisterValue.init_integer(state.count);
+                }
+            }
+
+            try self.results.append(self.allocator, result);
+        }
+
+        if (self.agg_groups.count() == 0 and self.num_group_cols == 0) {
+            const result = try self.allocator.alloc(RegisterValue, self.num_aggs);
+            for (0..self.num_aggs) |i| {
+                result[i] = RegisterValue.init_integer(0);
+            }
+            try self.results.append(self.allocator, result);
         }
 
         self.pc += 1;

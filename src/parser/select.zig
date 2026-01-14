@@ -20,6 +20,7 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
         .from = "",
         .joins = &[_]ast.JoinClause{},
         .where = null,
+        .group_by = &[_][]const u8{},
         .order_by = &[_]ast.OrderBy{},
         .limit = null,
         .offset = null,
@@ -41,6 +42,14 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
     if (self.current.type == token.TokenType.where) {
         self.advance();
         stmt.where = try self.parse_or_expression();
+    }
+
+    if (self.current.type == token.TokenType.group) {
+        self.advance();
+        if (!self.expect(token.TokenType.by)) {
+            return error.ExpectedBy;
+        }
+        stmt.group_by = try parse_group_by(self);
     }
 
     if (self.current.type == token.TokenType.order) {
@@ -183,6 +192,26 @@ fn parse_select_columns(self: *Parser) ParseError![]ast.Expression {
         }
     }
     return columns.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
+}
+
+fn parse_group_by(self: *Parser) ParseError![][]const u8 {
+    var cols = std.ArrayList([]const u8){};
+    defer cols.deinit(self.allocator);
+
+    while (true) {
+        if (self.current.type != token.TokenType.ident) {
+            break;
+        }
+        try cols.append(self.allocator, self.current.literal);
+        self.advance();
+
+        if (self.current.type == token.TokenType.comma) {
+            self.advance();
+        } else {
+            break;
+        }
+    }
+    return cols.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
 }
 
 fn parse_order_by(self: *Parser) ParseError![]ast.OrderBy {
