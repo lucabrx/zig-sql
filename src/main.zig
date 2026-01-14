@@ -2,7 +2,7 @@ const std = @import("std");
 const repl = @import("repl.zig");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){}; // not sure if this is best option
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

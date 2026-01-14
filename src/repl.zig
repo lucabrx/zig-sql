@@ -37,7 +37,6 @@ pub const REPL = struct {
     }
 
     pub fn start(self: *REPL) !void {
-        // Initialize storage
         const pager = try self.allocator.create(Pager);
         pager.* = try Pager.init(self.allocator, self.db_path);
         self.pager = pager;
@@ -157,7 +156,6 @@ pub const REPL = struct {
     fn execute_statement(self: *REPL, input: []const u8) !void {
         const db = self.db orelse return error.DatabaseNotInitialized;
 
-        // Tokenize
         var l = lexer.Lexer.init(input);
         const tokens = try l.tokenize(self.allocator);
         defer self.allocator.free(tokens);
@@ -172,7 +170,6 @@ pub const REPL = struct {
             }
         }
 
-        // Parse
         var p = parser.Parser.init(tokens, self.allocator);
         const stmt = p.parse() catch |err| {
             try self.writer.print("Parse error: {s}\n", .{@errorName(err)});

@@ -41,7 +41,6 @@ pub const Pager = struct {
         @memset(&pages, null); // sets all entries to null
 
         if (std.mem.eql(u8, filename, ":memory:")) {
-            print("[PAGER] Created in-memory database\n", .{});
             return Pager{
                 .file = null,
                 .file_length = 0,
