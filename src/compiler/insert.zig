@@ -53,6 +53,9 @@ pub fn compile_value_expression(c: *Compiler, expr: Expression, dest_reg: i32) !
         .null_literal => {
             _ = try c.emit(.null, dest_reg, 0, 0, "", null);
         },
+        .boolean_literal => |bool_lit| {
+            _ = try c.emit(.integer, dest_reg, if (bool_lit.value) 1 else 0, 0, "", null);
+        },
         else => {
             _ = try c.emit(.null, dest_reg, 0, 0, "", null);
         },
