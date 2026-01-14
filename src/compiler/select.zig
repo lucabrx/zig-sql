@@ -200,6 +200,8 @@ fn compile_join_select(c: *Compiler, stmt: SelectStatement) !void {
         });
     }
 
+    try optimize_join_order(c, &tables, stmt);
+
     const output_cols = try resolve_join_columns(c, stmt.columns, tables.items);
     defer c.allocator.free(output_cols);
 
@@ -267,6 +269,49 @@ fn compile_join_select(c: *Compiler, stmt: SelectStatement) !void {
 
     for (rewind_addrs.items) |addr| {
         c.patch(addr, @intCast(close_addr));
+    }
+}
+
+fn optimize_join_order(c: *Compiler, tables: *std.ArrayList(TableInfo), stmt: SelectStatement) !void {
+    if (tables.items.len <= 1) return;
+
+    var costs = try c.allocator.alloc(usize, tables.items.len);
+    defer c.allocator.free(costs);
+
+    for (tables.items, 0..) |tbl, i| {
+        var cost: usize = tbl.schema.columns.len * 100;
+
+        const actual_name = if (i < stmt.from.len) stmt.from[i].name else stmt.joins[i - stmt.from.len].table.name;
+        var idx_iter = c.db.indexes.iterator();
+        while (idx_iter.next()) |entry| {
+            const index_def = entry.value_ptr.*;
+            if (std.mem.eql(u8, index_def.table, actual_name)) {
+                cost = cost / 2;
+                break;
+            }
+        }
+
+        costs[i] = cost;
+    }
+
+    var j: usize = 0;
+    while (j < tables.items.len - 1) : (j += 1) {
+        var min_idx = j;
+        var k = j + 1;
+        while (k < tables.items.len) : (k += 1) {
+            if (costs[k] < costs[min_idx]) {
+                min_idx = k;
+            }
+        }
+        if (min_idx != j) {
+            const tmp_tbl = tables.items[j];
+            tables.items[j] = tables.items[min_idx];
+            tables.items[min_idx] = tmp_tbl;
+
+            const tmp_cost = costs[j];
+            costs[j] = costs[min_idx];
+            costs[min_idx] = tmp_cost;
+        }
     }
 }
 
@@ -490,65 +535,72 @@ fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema
     c.patch(scan_addr, @intCast(close_addr));
 }
 
+const EqualityCandidate = struct { col: []const u8, val: Expression };
+
 fn find_usable_index(c: *Compiler, where_expr: Expression, table_name: []const u8, schema: *const Schema) !?IndexCandidate {
-    switch (where_expr) {
-        .binary_expression => |bin_expr| {
-            const op = bin_expr.operator;
-            if (!std.mem.eql(u8, op, "=") and !std.mem.eql(u8, op, "==")) {
-                return null;
-            }
+    var candidates = std.ArrayList(EqualityCandidate){};
+    defer candidates.deinit(c.allocator);
 
-            var col_name: ?[]const u8 = null;
-            var value_expr: ?Expression = null;
+    try extract_equality_conditions(where_expr, &candidates, c.allocator);
 
-            switch (bin_expr.left) {
-                .identifier => |ident| {
-                    col_name = ident.name;
-                    value_expr = bin_expr.right;
-                },
-                else => {},
-            }
+    if (candidates.items.len == 0) return null;
 
-            if (col_name == null) {
-                switch (bin_expr.right) {
-                    .identifier => |ident| {
-                        col_name = ident.name;
-                        value_expr = bin_expr.left;
-                    },
-                    else => {},
-                }
-            }
-
-            if (col_name == null or value_expr == null) return null;
-
-            _ = schema.get_column_index(col_name.?) catch return null;
-
-            const index_name = try find_index_for_column(c, table_name, col_name.?);
-            if (index_name) |idx_name| {
-                return IndexCandidate{
-                    .index_name = idx_name,
-                    .column_name = col_name.?,
-                    .value = value_expr.?,
-                };
-            }
-        },
-        else => {},
-    }
-
-    return null;
-}
-
-fn find_index_for_column(c: *Compiler, table_name: []const u8, column_name: []const u8) !?[]const u8 {
     var idx_iter = c.db.indexes.iterator();
     while (idx_iter.next()) |entry| {
         const index_def = entry.value_ptr.*;
         if (!std.mem.eql(u8, index_def.table, table_name)) continue;
 
-        if (index_def.columns.len == 1 and std.mem.eql(u8, index_def.columns[0], column_name)) {
-            return entry.key_ptr.*;
+        if (index_def.columns.len == 1) {
+            for (candidates.items) |cand| {
+                _ = schema.get_column_index(cand.col) catch continue;
+                if (std.mem.eql(u8, index_def.columns[0], cand.col)) {
+                    return IndexCandidate{
+                        .index_name = entry.key_ptr.*,
+                        .column_name = cand.col,
+                        .value = cand.val,
+                    };
+                }
+            }
         }
     }
+
     return null;
+}
+
+fn extract_equality_conditions(expr: Expression, candidates: *std.ArrayList(EqualityCandidate), allocator: std.mem.Allocator) !void {
+    switch (expr) {
+        .binary_expression => |bin_expr| {
+            const op = bin_expr.operator;
+            if (std.mem.eql(u8, op, "AND")) {
+                try extract_equality_conditions(bin_expr.left, candidates, allocator);
+                try extract_equality_conditions(bin_expr.right, candidates, allocator);
+            } else if (std.mem.eql(u8, op, "=") or std.mem.eql(u8, op, "==")) {
+                var col_name: ?[]const u8 = null;
+                var value_expr: ?Expression = null;
+
+                switch (bin_expr.left) {
+                    .identifier => |ident| {
+                        col_name = ident.name;
+                        value_expr = bin_expr.right;
+                    },
+                    else => {},
+                }
+                if (col_name == null) {
+                    switch (bin_expr.right) {
+                        .identifier => |ident| {
+                            col_name = ident.name;
+                            value_expr = bin_expr.left;
+                        },
+                        else => {},
+                    }
+                }
+                if (col_name != null and value_expr != null) {
+                    try candidates.append(allocator, .{ .col = col_name.?, .val = value_expr.? });
+                }
+            }
+        },
+        else => {},
+    }
 }
 
 fn resolve_select_columns(c: *Compiler, cols: []const ast.SelectColumn, schema: *const Schema) ![]ColInfo {
