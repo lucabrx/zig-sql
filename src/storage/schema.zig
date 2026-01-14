@@ -61,3 +61,11 @@ pub const Schema = struct {
         return StorageError.ColumnNotFound;
     }
 };
+
+pub const IndexDef = struct {
+    name: []const u8,
+    table: []const u8,
+    columns: []const []const u8,
+    unique: bool,
+    root_page: u32,
+};

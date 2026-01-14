@@ -9,9 +9,9 @@ const Column = @import("../storage/schema.zig").Column;
 const Type = @import("../storage/schema.zig").Type;
 
 pub fn compile_create_table(c: *Compiler, stmt: CreateTableStatement) !void {
-    var columns = try c.allocator.alloc(Column, stmt.columns.len);
+    var columns = try c.persistent_allocator.alloc(Column, stmt.columns.len);
     for (stmt.columns, 0..) |col_def, i| {
-        const owned_name = try c.allocator.dupe(u8, col_def.name);
+        const owned_name = try c.persistent_allocator.dupe(u8, col_def.name);
         columns[i] = Column{
             .name = owned_name,
             .type = map_column_type(col_def.type_name),
@@ -20,9 +20,9 @@ pub fn compile_create_table(c: *Compiler, stmt: CreateTableStatement) !void {
         };
     }
 
-    const owned_table_name = try c.allocator.dupe(u8, stmt.table);
+    const owned_table_name = try c.persistent_allocator.dupe(u8, stmt.table);
 
-    const schema_ptr = try c.allocator.create(Schema);
+    const schema_ptr = try c.persistent_allocator.create(Schema);
     schema_ptr.* = Schema.init(owned_table_name, columns);
 
     _ = try c.emit(.create_table, 0, 0, 0, "", @ptrCast(schema_ptr));
@@ -31,6 +31,28 @@ pub fn compile_create_table(c: *Compiler, stmt: CreateTableStatement) !void {
 pub fn compile_drop_table(c: *Compiler, stmt: DropTableStatement) !void {
     const if_exists: i32 = if (stmt.if_exists) 1 else 0;
     _ = try c.emit(.drop_table, if_exists, 0, 0, stmt.table, null);
+}
+
+pub fn compile_create_index(c: *Compiler, stmt: ast.CreateIndexStatement) !void {
+    const IndexDef = @import("../storage/schema.zig").IndexDef;
+
+    _ = c.db.get_table(stmt.table) catch return CompilerError.TableNotFound;
+
+    var columns = try c.persistent_allocator.alloc([]const u8, stmt.columns.len);
+    for (stmt.columns, 0..) |col, i| {
+        columns[i] = try c.persistent_allocator.dupe(u8, col);
+    }
+
+    const index_def = try c.persistent_allocator.create(IndexDef);
+    index_def.* = IndexDef{
+        .name = try c.persistent_allocator.dupe(u8, stmt.index_name),
+        .table = try c.persistent_allocator.dupe(u8, stmt.table),
+        .columns = columns,
+        .unique = stmt.unique,
+        .root_page = 0, // Will be set by VM
+    };
+
+    _ = try c.emit(.create_index, 0, 0, 0, "", @ptrCast(index_def));
 }
 
 fn map_column_type(parser_type: []const u8) Type {
@@ -61,7 +83,7 @@ test "compile create table" {
     var db = try DB.init(allocator, &pager);
     defer db.close();
 
-    var compiler = Compiler.init(allocator, &db);
+    var compiler = Compiler.init(allocator, allocator, &db);
     defer compiler.deinit();
 
     const stmt = CreateTableStatement{
@@ -100,7 +122,7 @@ test "compile drop table" {
     var db = try DB.init(allocator, &pager);
     defer db.close();
 
-    var compiler = Compiler.init(allocator, &db);
+    var compiler = Compiler.init(allocator, allocator, &db);
     defer compiler.deinit();
 
     const stmt = DropTableStatement{

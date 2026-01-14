@@ -61,6 +61,7 @@ pub const Table = struct {
 pub const Database = struct {
     pager: *Pager,
     tables: std.StringHashMap(*Table),
+    indexes: std.StringHashMap(*schema_mod.IndexDef),
     next_page: u32,
     allocator: std.mem.Allocator,
 
@@ -71,6 +72,7 @@ pub const Database = struct {
         var db = Database{
             .pager = pager,
             .tables = std.StringHashMap(*Table).init(allocator),
+            .indexes = std.StringHashMap(*schema_mod.IndexDef).init(allocator),
             .next_page = 1,
             .allocator = allocator,
         };
@@ -156,6 +158,44 @@ pub const Database = struct {
         return try names.toOwnedSlice(self.allocator);
     }
 
+    pub fn create_index(self: *Database, index_def: *schema_mod.IndexDef) !void {
+        const owned_name = try self.allocator.dupe(u8, index_def.name);
+        errdefer self.allocator.free(owned_name);
+
+        if (self.indexes.contains(owned_name)) {
+            self.allocator.free(owned_name);
+            return StorageError.IndexAlreadyExists;
+        }
+
+        const root_page = self.next_page;
+        self.next_page += 1;
+        index_def.root_page = root_page;
+
+        const page = try self.pager.get_page(root_page);
+        const node = @import("node.zig");
+        node.initialize_leaf_node(page);
+        node.set_node_root(page, true);
+        self.pager.mark_dirty(root_page);
+
+        try self.indexes.put(owned_name, index_def);
+        try self.save_metadata();
+
+        print("[DB] Created index '{s}' on table '{s}' at page {}\n", .{ owned_name, index_def.table, root_page });
+    }
+
+    pub fn get_index(self: *Database, name: []const u8) !*schema_mod.IndexDef {
+        return self.indexes.get(name) orelse StorageError.IndexNotFound;
+    }
+
+    pub fn list_indexes(self: *Database) ![][]const u8 {
+        var names = std.ArrayList([]const u8){};
+        var iter = self.indexes.keyIterator();
+        while (iter.next()) |key| {
+            try names.append(self.allocator, key.*);
+        }
+        return try names.toOwnedSlice(self.allocator);
+    }
+
     fn save_metadata(self: *Database) !void {
         const page = try self.pager.get_page(0);
         std.mem.writeInt(u32, page.data[12..16], self.next_page, .little);
@@ -165,6 +205,7 @@ pub const Database = struct {
 
     pub fn close(self: *Database) void {
         self.save_metadata() catch {};
+
         var iter = self.tables.iterator();
         while (iter.next()) |entry| {
             const table = entry.value_ptr.*;
@@ -181,6 +222,20 @@ pub const Database = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.tables.deinit();
+
+        var idx_iter = self.indexes.iterator();
+        while (idx_iter.next()) |entry| {
+            const index_def = entry.value_ptr.*;
+            self.allocator.free(index_def.name);
+            self.allocator.free(index_def.table);
+            for (index_def.columns) |col| {
+                self.allocator.free(col);
+            }
+            self.allocator.free(index_def.columns);
+            self.allocator.destroy(index_def);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.indexes.deinit();
     }
 
     pub fn debug(self: *Database) void {

@@ -16,6 +16,7 @@ pub const Statement = union(enum) {
     select_stmt: SelectStatement,
     insert_stmt: InsertStatement,
     create_table_stmt: CreateTableStatement,
+    create_index_stmt: CreateIndexStatement,
     delete_stmt: DeleteStatement,
     update_stmt: UpdateStatement,
     drop_table_stmt: DropTableStatement,
@@ -79,6 +80,13 @@ pub const Assignment = struct {
 pub const DropTableStatement = struct {
     table: []const u8,
     if_exists: bool,
+};
+
+pub const CreateIndexStatement = struct {
+    index_name: []const u8,
+    table: []const u8,
+    columns: []const []const u8,
+    unique: bool,
 };
 
 // --- Expressions ---

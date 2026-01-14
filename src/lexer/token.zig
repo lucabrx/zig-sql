@@ -68,6 +68,9 @@ pub const TokenType = enum {
     drop,
     @"if",
     exists,
+    index,
+    unique,
+    on,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -129,6 +132,9 @@ pub const TokenType = enum {
             .drop => "DROP",
             .@"if" => "IF",
             .exists => "EXISTS",
+            .index => "INDEX",
+            .unique => "UNIQUE",
+            .on => "ON",
         };
     }
 };
@@ -177,6 +183,9 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "DROP", .drop },
     .{ "IF", .@"if" },
     .{ "EXISTS", .exists },
+    .{ "INDEX", .index },
+    .{ "UNIQUE", .unique },
+    .{ "ON", .on },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

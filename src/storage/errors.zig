@@ -4,6 +4,8 @@ pub const StorageError = error{
     TableFull,
     TableNotFound,
     TableAlreadyExists,
+    IndexNotFound,
+    IndexAlreadyExists,
     PageOutOfBounds,
     PageNotFound,
     IncompleteRead,

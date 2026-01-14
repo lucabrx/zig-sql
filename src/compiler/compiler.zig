@@ -16,28 +16,20 @@ pub const Compiler = struct {
     instructions: std.ArrayList(Instruction),
     next_reg: i32,
     allocator: std.mem.Allocator,
-    float_ptrs: std.ArrayList(*f64),
+    persistent_allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, db: *DB) Compiler {
+    pub fn init(allocator: std.mem.Allocator, persistent_allocator: std.mem.Allocator, db: *DB) Compiler {
         return Compiler{
             .db = db,
             .instructions = std.ArrayList(Instruction){},
             .next_reg = 0,
             .allocator = allocator,
-            .float_ptrs = std.ArrayList(*f64){},
+            .persistent_allocator = persistent_allocator,
         };
     }
 
     pub fn deinit(self: *Compiler) void {
-        for (self.float_ptrs.items) |ptr| {
-            self.allocator.destroy(ptr);
-        }
-        self.float_ptrs.deinit(self.allocator);
         self.instructions.deinit(self.allocator);
-    }
-
-    pub fn track_float(self: *Compiler, ptr: *f64) !void {
-        try self.float_ptrs.append(self.allocator, ptr);
     }
 
     pub fn compile(self: *Compiler, stmt: Statement) ![]Instruction {
@@ -50,6 +42,7 @@ pub const Compiler = struct {
             .select_stmt => |s| try select.compile_select(self, s),
             .insert_stmt => |s| try insert.compile_insert(self, s),
             .create_table_stmt => |s| try schema.compile_create_table(self, s),
+            .create_index_stmt => |s| try schema.compile_create_index(self, s),
             .delete_stmt => |s| try delete.compile_delete(self, s),
             .update_stmt => |s| try update.compile_update(self, s),
             .drop_table_stmt => |s| try schema.compile_drop_table(self, s),
@@ -98,7 +91,7 @@ test "compiler initialization" {
     var db = try DB.init(allocator, &pager);
     defer db.close();
 
-    var compiler = Compiler.init(allocator, &db);
+    var compiler = Compiler.init(allocator, allocator, &db);
     defer compiler.deinit();
 
     try std.testing.expectEqual(0, compiler.next_reg);

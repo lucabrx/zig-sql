@@ -4,14 +4,35 @@ const token = @import("../lexer/token.zig");
 const Parser = @import("parser.zig").Parser;
 const ParseError = @import("parser.zig").ParseError;
 
-pub fn parse_create(self: *Parser) ParseError!ast.CreateTableStatement {
-    const stmt = self.allocator.create(ast.CreateTableStatement) catch return error.OutOfMemory;
+pub const CreateResult = union(enum) {
+    table: ast.CreateTableStatement,
+    index: ast.CreateIndexStatement,
+};
 
-    self.advance();
+pub fn parse_create(self: *Parser) ParseError!CreateResult {
+    self.advance(); // consume CREATE
 
-    if (!self.expect(token.TokenType.table)) {
+    var is_unique = false;
+    if (self.current.type == token.TokenType.unique) {
+        is_unique = true;
+        self.advance();
+    }
+
+    if (self.current.type == token.TokenType.index) {
+        return CreateResult{ .index = try parse_create_index(self, is_unique) };
+    }
+
+    if (self.current.type != token.TokenType.table) {
         return error.ExpectedTable;
     }
+
+    return CreateResult{ .table = try parse_create_table(self) };
+}
+
+fn parse_create_table(self: *Parser) ParseError!ast.CreateTableStatement {
+    const stmt = self.allocator.create(ast.CreateTableStatement) catch return error.OutOfMemory;
+
+    self.advance(); // consume TABLE
 
     if (self.current.type != token.TokenType.ident) {
         self.addError("Expected table name, got '{s}'", .{@tagName(self.current.type)});
@@ -35,6 +56,60 @@ pub fn parse_create(self: *Parser) ParseError!ast.CreateTableStatement {
     }
 
     return stmt.*;
+}
+
+fn parse_create_index(self: *Parser, is_unique: bool) ParseError!ast.CreateIndexStatement {
+    self.advance();
+
+    if (self.current.type != token.TokenType.ident) {
+        self.addError("Expected index name, got '{s}'", .{@tagName(self.current.type)});
+        return error.ExpectedIdentifier;
+    }
+    const index_name = self.current.literal;
+    self.advance();
+
+    if (self.current.type != token.TokenType.on) {
+        self.addError("Expected ON, got '{s}'", .{@tagName(self.current.type)});
+        return error.UnexpectedToken;
+    }
+    self.advance();
+
+    if (self.current.type != token.TokenType.ident) {
+        self.addError("Expected table name, got '{s}'", .{@tagName(self.current.type)});
+        return error.ExpectedIdentifier;
+    }
+    const table_name = self.current.literal;
+    self.advance();
+
+    if (!self.expect(token.TokenType.lparen)) {
+        return error.ExpectedOpenParen;
+    }
+
+    var columns = std.ArrayList([]const u8){};
+    while (self.current.type == token.TokenType.ident) {
+        columns.append(self.allocator, self.current.literal) catch return error.OutOfMemory;
+        self.advance();
+        if (self.current.type == token.TokenType.comma) {
+            self.advance();
+        } else {
+            break;
+        }
+    }
+
+    if (!self.expect(token.TokenType.rparen)) {
+        return error.ExpectedCloseParen;
+    }
+
+    if (self.current.type == token.TokenType.semicolon) {
+        self.advance();
+    }
+
+    return ast.CreateIndexStatement{
+        .index_name = index_name,
+        .table = table_name,
+        .columns = columns.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
+        .unique = is_unique,
+    };
 }
 
 fn parse_column_defs(self: *Parser) ParseError![]ast.ColumnDef {
@@ -189,7 +264,8 @@ test "parse create table" {
         const tokens = try l.tokenize(allocator);
 
         var p = Parser.init(tokens, allocator);
-        const stmt = try parse_create(&p);
+        const result = try parse_create(&p);
+        const stmt = result.table;
 
         try std.testing.expectEqualStrings(t.table, stmt.table);
         try std.testing.expectEqual(t.columns.len, stmt.columns.len);
@@ -202,4 +278,39 @@ test "parse create table" {
             try std.testing.expectEqual(expected_col.not_null, actual_col.not_null);
         }
     }
+}
+
+test "parse create index" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var l = lexer.Lexer.init("CREATE INDEX idx_email ON users (email);");
+    const tokens = try l.tokenize(allocator);
+
+    var p = Parser.init(tokens, allocator);
+    const result = try parse_create(&p);
+    const stmt = result.index;
+
+    try std.testing.expectEqualStrings("idx_email", stmt.index_name);
+    try std.testing.expectEqualStrings("users", stmt.table);
+    try std.testing.expectEqual(1, stmt.columns.len);
+    try std.testing.expectEqualStrings("email", stmt.columns[0]);
+    try std.testing.expect(!stmt.unique);
+}
+
+test "parse create unique index" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var l = lexer.Lexer.init("CREATE UNIQUE INDEX idx_email ON users (email);");
+    const tokens = try l.tokenize(allocator);
+
+    var p = Parser.init(tokens, allocator);
+    const result = try parse_create(&p);
+    const stmt = result.index;
+
+    try std.testing.expectEqualStrings("idx_email", stmt.index_name);
+    try std.testing.expect(stmt.unique);
 }

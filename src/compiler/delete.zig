@@ -56,7 +56,7 @@ test "compile delete without where" {
     schema_ptr.* = schema_mod.Schema.init(try allocator.dupe(u8, "test"), columns);
     _ = try db.create_table(schema_ptr);
 
-    var compiler = Compiler.init(allocator, &db);
+    var compiler = Compiler.init(allocator, allocator, &db);
     defer compiler.deinit();
 
     const stmt = DeleteStatement{

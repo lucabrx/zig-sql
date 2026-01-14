@@ -117,9 +117,10 @@ pub const Parser = struct {
     pub fn parse(self: *Parser) ParseError!ast.Statement {
         switch (self.current.type) {
             token.TokenType.create => {
-                const stmt = try create.parse_create(self);
-                return ast.Statement{
-                    .create_table_stmt = stmt,
+                const result = try create.parse_create(self);
+                return switch (result) {
+                    .table => |stmt| ast.Statement{ .create_table_stmt = stmt },
+                    .index => |stmt| ast.Statement{ .create_index_stmt = stmt },
                 };
             },
             token.TokenType.insert => {
@@ -199,4 +200,24 @@ test "parse create table statement via parse()" {
     try std.testing.expectEqualStrings("items", stmt.create_table_stmt.table);
     try std.testing.expectEqual(1, stmt.create_table_stmt.columns.len);
     try std.testing.expectEqualStrings("id", stmt.create_table_stmt.columns[0].name);
+}
+
+test "parse create index statement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const input = "CREATE INDEX idx_name ON users (name);";
+    var l = lexer.Lexer.init(input);
+    const tokens = try l.tokenize(allocator);
+
+    var p = Parser.init(tokens, allocator);
+    const stmt = try p.parse();
+
+    try std.testing.expect(std.meta.activeTag(stmt) == .create_index_stmt);
+    try std.testing.expectEqualStrings("idx_name", stmt.create_index_stmt.index_name);
+    try std.testing.expectEqualStrings("users", stmt.create_index_stmt.table);
+    try std.testing.expectEqual(1, stmt.create_index_stmt.columns.len);
+    try std.testing.expectEqualStrings("name", stmt.create_index_stmt.columns[0]);
+    try std.testing.expect(!stmt.create_index_stmt.unique);
 }

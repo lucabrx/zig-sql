@@ -187,6 +187,7 @@ pub const VM = struct {
             .make_row => self.pc += 1,
             .insert => try self.op_insert(inst),
             .create_table => try self.op_create_table(inst),
+            .create_index => try self.op_create_index(inst),
             .drop_table => try self.op_drop_table(inst),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .delete => try self.op_delete(inst),
@@ -320,6 +321,15 @@ pub const VM = struct {
         if (inst.p5) |schema_ptr| {
             const schema: *const storage.Schema = @ptrCast(@alignCast(schema_ptr));
             _ = try self.db.create_table(schema);
+        }
+        self.pc += 1;
+    }
+
+    fn op_create_index(self: *VM, inst: Instruction) !void {
+        if (inst.p5) |index_ptr| {
+            const IndexDef = @import("../storage/schema.zig").IndexDef;
+            const index_def: *IndexDef = @ptrCast(@alignCast(index_ptr));
+            try self.db.create_index(index_def);
         }
         self.pc += 1;
     }

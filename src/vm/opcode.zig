@@ -56,6 +56,7 @@ pub const Opcode = enum(u8) {
 
     // Schema operations
     create_table,
+    create_index,
     drop_table,
 
     pub fn to_string(self: Opcode) []const u8 {
@@ -96,6 +97,7 @@ pub const Opcode = enum(u8) {
             .mul => "MUL",
             .div => "DIV",
             .create_table => "CREATE_TABLE",
+            .create_index => "CREATE_INDEX",
             .drop_table => "DROP_TABLE",
         };
     }

@@ -98,6 +98,7 @@ pub const REPL = struct {
             \\ .exit    - Exit this program
             \\ .help    - Show this help message
             \\ .tables  - List all tables
+            \\ .indexes - List all indexes
             \\ .debug   - Toggle debug mode
             \\
         );
@@ -108,6 +109,7 @@ pub const REPL = struct {
             exit,
             help,
             tables,
+            indexes,
             debug,
         };
 
@@ -127,6 +129,10 @@ pub const REPL = struct {
             },
             .tables => {
                 try self.list_tables();
+                return .Success;
+            },
+            .indexes => {
+                try self.list_indexes();
                 return .Success;
             },
             .debug => {
@@ -149,6 +155,22 @@ pub const REPL = struct {
 
         try self.writer.writeAll("Tables:\n");
         for (tables) |name| {
+            try self.writer.print("  {s}\n", .{name});
+        }
+    }
+
+    fn list_indexes(self: *REPL) !void {
+        const db = self.db orelse return;
+        const indexes = try db.list_indexes();
+        defer self.allocator.free(indexes);
+
+        if (indexes.len == 0) {
+            try self.writer.writeAll("No indexes found.\n");
+            return;
+        }
+
+        try self.writer.writeAll("Indexes:\n");
+        for (indexes) |name| {
             try self.writer.print("  {s}\n", .{name});
         }
     }
@@ -186,8 +208,7 @@ pub const REPL = struct {
             try self.print_ast(stmt);
         }
 
-        // Compiler uses main allocator for persistent data (schemas)
-        var compiler = Compiler.init(self.allocator, db);
+        var compiler = Compiler.init(temp_allocator, self.allocator, db);
         defer compiler.deinit();
 
         const instructions = compiler.compile(stmt) catch |err| {
@@ -268,6 +289,17 @@ pub const REPL = struct {
                         try self.writer.writeAll(" NOT NULL");
                     }
                     try self.writer.writeAll("\n");
+                }
+            },
+            .create_index_stmt => |idx_stmt| {
+                try self.writer.print("CREATE{s} INDEX {s} ON {s}\n", .{
+                    if (idx_stmt.unique) " UNIQUE" else "",
+                    idx_stmt.index_name,
+                    idx_stmt.table,
+                });
+                try self.writer.writeAll("Columns:\n");
+                for (idx_stmt.columns) |col| {
+                    try self.writer.print("  - {s}\n", .{col});
                 }
             },
             .insert_stmt => |insert_stmt| {
