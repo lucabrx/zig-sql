@@ -5,3 +5,4 @@ zig-out/
 
 # macOS
 .DS_Store
+test*

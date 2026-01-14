@@ -1,6 +1,7 @@
 const std = @import("std");
 const schema_mod = @import("schema.zig");
 const Schema = schema_mod.Schema;
+const Column = schema_mod.Column;
 const btree_mod = @import("btree.zig");
 const Btree = btree_mod.Btree;
 const pager_mod = @import("pager.zig");
@@ -15,6 +16,7 @@ const IndexBtree = @import("index_btree.zig").IndexBtree;
 const index_btree = @import("index_btree.zig");
 const Transaction = @import("transaction.zig").Transaction;
 const Wal = @import("wal.zig").Wal;
+const Catalog = @import("catalog.zig").Catalog;
 
 const print = std.debug.print;
 
@@ -78,9 +80,11 @@ pub const Database = struct {
     transaction: Transaction,
     wal: ?*Wal,
     db_filename: []const u8,
+    catalog: ?Catalog,
 
     const MAGIC: *const [4]u8 = "ZSQL";
     const VERSION: u32 = 1;
+    const CATALOG_PAGE: u32 = 1;
 
     pub fn init(allocator: std.mem.Allocator, pager: *Pager) !Database {
         return try initWithFilename(allocator, pager, ":memory:");
@@ -88,7 +92,8 @@ pub const Database = struct {
 
     pub fn initWithFilename(allocator: std.mem.Allocator, pager: *Pager, filename: []const u8) !Database {
         var wal: ?*Wal = null;
-        if (!std.mem.eql(u8, filename, ":memory:")) {
+        const is_file_db = !std.mem.eql(u8, filename, ":memory:");
+        if (is_file_db) {
             const wal_ptr = try allocator.create(Wal);
             wal_ptr.* = try Wal.init(allocator, filename);
             wal = wal_ptr;
@@ -99,11 +104,12 @@ pub const Database = struct {
             .tables = std.StringHashMap(*Table).init(allocator),
             .indexes = std.StringHashMap(*schema_mod.IndexDef).init(allocator),
             .index_btrees = std.StringHashMap(*IndexBtree).init(allocator),
-            .next_page = 1,
+            .next_page = 2,
             .allocator = allocator,
             .transaction = Transaction.init(allocator, pager),
             .wal = wal,
             .db_filename = filename,
+            .catalog = if (is_file_db) Catalog.init(allocator, pager, CATALOG_PAGE) else null,
         };
 
         if (wal) |w| {
@@ -115,6 +121,9 @@ pub const Database = struct {
 
         if (pager.num_pages > 0) {
             try db.load_metadata();
+            if (db.catalog) |*cat| {
+                try db.load_from_catalog(cat);
+            }
         } else {
             try db.init_metadata();
         }
@@ -122,13 +131,72 @@ pub const Database = struct {
         return db;
     }
 
+    fn load_from_catalog(self: *Database, cat: *Catalog) !void {
+        const data = try cat.load_schemas();
+        defer self.allocator.free(data.tables);
+        defer self.allocator.free(data.indexes);
+
+        for (data.tables) |table_info| {
+            const table_ptr = try self.allocator.create(Table);
+            table_ptr.* = Table.init(self.pager, table_info.schema, table_info.root_page);
+            const owned_name = try self.allocator.dupe(u8, table_info.schema.table_name);
+            try self.tables.put(owned_name, table_ptr);
+        }
+
+        for (data.indexes) |idx_info| {
+            defer {
+                self.allocator.free(idx_info.name);
+                self.allocator.free(idx_info.table);
+                for (idx_info.columns) |col| {
+                    self.allocator.free(col);
+                }
+                self.allocator.free(idx_info.columns);
+            }
+
+            const index_def = try self.allocator.create(schema_mod.IndexDef);
+            index_def.* = schema_mod.IndexDef{
+                .name = try self.allocator.dupe(u8, idx_info.name),
+                .table = try self.allocator.dupe(u8, idx_info.table),
+                .columns = blk: {
+                    var cols = try self.allocator.alloc([]const u8, idx_info.columns.len);
+                    for (idx_info.columns, 0..) |col, i| {
+                        cols[i] = try self.allocator.dupe(u8, col);
+                    }
+                    break :blk cols;
+                },
+                .unique = idx_info.unique,
+                .root_page = idx_info.root_page,
+                .column_indices = &[_]usize{},
+            };
+
+            if (self.tables.get(idx_info.table)) |table| {
+                const col_indices = try self.allocator.alloc(usize, index_def.columns.len);
+                for (index_def.columns, 0..) |col_name, i| {
+                    col_indices[i] = try table.schema.get_column_index(col_name);
+                }
+                index_def.column_indices = col_indices;
+            }
+
+            const idx_btree = try self.allocator.create(IndexBtree);
+            idx_btree.* = IndexBtree.init(self.pager, idx_info.root_page);
+
+            const owned_idx_name = try self.allocator.dupe(u8, idx_info.name);
+            try self.indexes.put(owned_idx_name, index_def);
+            try self.index_btrees.put(owned_idx_name, idx_btree);
+        }
+    }
+
     fn init_metadata(self: *Database) !void {
         const page = try self.pager.get_page(0);
         @memcpy(page.data[0..4], MAGIC);
         std.mem.writeInt(u32, page.data[4..8], VERSION, .little);
         std.mem.writeInt(u32, page.data[8..12], 0, .little);
-        std.mem.writeInt(u32, page.data[12..16], 1, .little);
+        std.mem.writeInt(u32, page.data[12..16], 2, .little);
         self.pager.mark_dirty(0);
+
+        _ = try self.pager.get_page(CATALOG_PAGE);
+        self.pager.mark_dirty(CATALOG_PAGE);
+
         print("[DB] Initialized metadata page\n", .{});
     }
 
@@ -159,6 +227,7 @@ pub const Database = struct {
 
         try self.tables.put(owned_name, table_ptr);
         try self.save_metadata();
+        try self.save_catalog();
 
         print("[DB] Created table '{s}' at page {}\n", .{ owned_name, root_page });
         return table_ptr;
@@ -182,6 +251,7 @@ pub const Database = struct {
 
         self.allocator.destroy(table);
         self.allocator.free(kv.key);
+        try self.save_catalog();
         print("[DB] Dropped table '{s}'\n", .{name});
     }
 
@@ -223,6 +293,7 @@ pub const Database = struct {
         try self.indexes.put(owned_name, index_def);
         try self.index_btrees.put(owned_name, idx_btree);
         try self.save_metadata();
+        try self.save_catalog();
 
         print("[DB] Created index '{s}' on table '{s}' at page {}\n", .{ owned_name, index_def.table, root_page });
     }
@@ -259,6 +330,7 @@ pub const Database = struct {
         }
         self.allocator.destroy(index_def);
         self.allocator.free(kv.key);
+        try self.save_catalog();
         print("[DB] Dropped index '{s}'\n", .{name});
     }
 
@@ -315,6 +387,16 @@ pub const Database = struct {
         self.pager.mark_dirty(0);
         if (self.wal) |w| {
             try w.log_page_write(0, &page.data);
+        }
+    }
+
+    fn save_catalog(self: *Database) !void {
+        if (self.catalog) |*cat| {
+            try cat.save_schemas(&self.tables, &self.indexes);
+            if (self.wal) |w| {
+                const page = try self.pager.get_page(CATALOG_PAGE);
+                try w.log_page_write(CATALOG_PAGE, &page.data);
+            }
         }
     }
 
