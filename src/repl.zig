@@ -68,26 +68,41 @@ pub const REPL = struct {
         try self.start();
         defer self.shutdown();
 
+        var input_buffer = std.ArrayList(u8){};
+        defer input_buffer.deinit(self.allocator);
+
         while (true) {
-            _ = try self.writer.write("zql> ");
+            if (input_buffer.items.len == 0) {
+                _ = try self.writer.write("zql> ");
+            } else {
+                _ = try self.writer.write("...> ");
+            }
             try self.writer.flush();
 
             const line = try self.reader.takeDelimiter('\n') orelse break;
             const trimmed = std.mem.trimRight(u8, line, "\r");
 
-            if (trimmed.len == 0) continue;
+            if (trimmed.len == 0 and input_buffer.items.len == 0) continue;
 
-            if (std.mem.startsWith(u8, trimmed, ".")) {
+            if (std.mem.startsWith(u8, trimmed, ".") and input_buffer.items.len == 0) {
                 const result = try self.execute_meta_command(trimmed);
                 try self.writer.flush();
                 if (result == .Exit) {
                     break;
                 }
             } else {
-                self.execute_statement(trimmed) catch |err| {
-                    try self.writer.print("Error: {s}\n", .{@errorName(err)});
-                };
-                try self.writer.flush();
+                if (input_buffer.items.len > 0) {
+                    try input_buffer.append(self.allocator, ' ');
+                }
+                try input_buffer.appendSlice(self.allocator, trimmed);
+
+                if (std.mem.endsWith(u8, trimmed, ";")) {
+                    self.execute_statement(input_buffer.items) catch |err| {
+                        try self.writer.print("Error: {s}\n", .{@errorName(err)});
+                    };
+                    try self.writer.flush();
+                    input_buffer.clearRetainingCapacity();
+                }
             }
         }
     }
