@@ -116,7 +116,7 @@ fn compile_join_select(c: *Compiler, stmt: SelectStatement) !void {
         _ = try c.emit(.column, col_info.cursor_id, col_info.col_idx, reg, "", null);
     }
 
-    _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), 0, "", null);
+    _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), if (stmt.distinct) 1 else 0, "", null);
 
     var i: usize = tables.items.len;
     while (i > 0) {
@@ -299,7 +299,7 @@ fn compile_full_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema,
         }
     }
 
-    _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), 0, "", null);
+    _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), if (stmt.distinct) 1 else 0, "", null);
 
     _ = try c.emit(.next, 0, @intCast(loop_start), 0, "", null);
 
@@ -335,7 +335,7 @@ fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema
         }
     }
 
-    _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), 0, "", null);
+    _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), if (stmt.distinct) 1 else 0, "", null);
 
     _ = try c.emit(.index_next, 0, @intCast(loop_start), 0, "", null);
 

@@ -42,6 +42,7 @@ pub const Node = union(enum) {
 // --- Statements ---
 
 pub const SelectStatement = struct {
+    distinct: bool,
     columns: []const Expression,
     from: []const u8,
     joins: []const JoinClause,
@@ -197,6 +198,7 @@ test "usage example" {
 
     const stmt = Statement{
         .select_stmt = SelectStatement{
+            .distinct = false,
             .columns = columns.items,
             .from = "users",
             .joins = &[_]JoinClause{},

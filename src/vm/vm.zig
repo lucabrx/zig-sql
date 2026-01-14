@@ -92,6 +92,7 @@ pub const VM = struct {
     allocator: std.mem.Allocator,
     index_rowids: std.ArrayList(u32),
     index_pos: usize = 0,
+    seen_rows: std.AutoHashMap(u64, void),
 
     pub fn init(allocator: std.mem.Allocator, db: *storage.Database) VM {
         return VM{
@@ -102,6 +103,7 @@ pub const VM = struct {
             .allocator = allocator,
             .index_rowids = std.ArrayList(u32){},
             .index_pos = 0,
+            .seen_rows = std.AutoHashMap(u64, void).init(allocator),
         };
     }
 
@@ -113,6 +115,7 @@ pub const VM = struct {
         }
         self.results.deinit(self.allocator);
         self.index_rowids.deinit(self.allocator);
+        self.seen_rows.deinit();
     }
 
     pub fn set_debug(self: *VM, enabled: bool) void {
@@ -127,6 +130,7 @@ pub const VM = struct {
             self.allocator.free(r);
         }
         self.results.clearRetainingCapacity();
+        self.seen_rows.clearRetainingCapacity();
     }
 
     pub fn run(self: *VM) !void {
@@ -275,12 +279,40 @@ pub const VM = struct {
     fn op_result_row(self: *VM, inst: Instruction) !void {
         const start_reg: usize = @intCast(inst.p1);
         const num_cols: usize = @intCast(inst.p2);
+        const is_distinct = inst.p3 != 0;
+
+        if (is_distinct) {
+            const row_hash = self.hash_row(start_reg, num_cols);
+            const gop = self.seen_rows.getOrPut(row_hash) catch return;
+            if (gop.found_existing) {
+                self.pc += 1;
+                return;
+            }
+        }
+
         const result = try self.allocator.alloc(RegisterValue, num_cols);
         for (0..num_cols) |i| {
             result[i] = self.registers[start_reg + i];
         }
         try self.results.append(self.allocator, result);
         self.pc += 1;
+    }
+
+    fn hash_row(self: *VM, start_reg: usize, num_cols: usize) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        for (0..num_cols) |i| {
+            const reg = self.registers[start_reg + i];
+            hasher.update(std.mem.asBytes(&reg.type));
+            switch (reg.type) {
+                .integer => hasher.update(std.mem.asBytes(&reg.integer)),
+                .real => hasher.update(std.mem.asBytes(&reg.real)),
+                .text => hasher.update(reg.text),
+                .blob => hasher.update(reg.blob),
+                .boolean => hasher.update(std.mem.asBytes(&reg.boolean)),
+                .null => hasher.update(&[_]u8{0}),
+            }
+        }
+        return hasher.final();
     }
 
     fn validate_not_null_constraints(self: *VM, table: *storage.Table, start_reg: usize, num_cols: usize) !void {

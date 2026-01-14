@@ -7,7 +7,15 @@ const ParseError = @import("parser.zig").ParseError;
 pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
     const stmt = self.allocator.create(ast.SelectStatement) catch return error.OutOfMemory;
     self.advance();
+
+    var is_distinct = false;
+    if (self.current.type == token.TokenType.distinct) {
+        is_distinct = true;
+        self.advance();
+    }
+
     stmt.* = ast.SelectStatement{
+        .distinct = is_distinct,
         .columns = try parse_select_columns(self),
         .from = "",
         .joins = &[_]ast.JoinClause{},

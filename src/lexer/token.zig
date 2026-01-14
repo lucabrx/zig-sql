@@ -86,6 +86,7 @@ pub const TokenType = enum {
     right,
     cross,
     outer,
+    distinct,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -170,6 +171,7 @@ pub const TokenType = enum {
             .right => "RIGHT",
             .cross => "CROSS",
             .outer => "OUTER",
+            .distinct => "DISTINCT",
         };
     }
 };
@@ -241,6 +243,7 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "RIGHT", .right },
     .{ "CROSS", .cross },
     .{ "OUTER", .outer },
+    .{ "DISTINCT", .distinct },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {
