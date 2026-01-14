@@ -140,6 +140,140 @@ fn parse_drop_index(self: *Parser) ParserError!ast.DropIndexStatement {
     return stmt.*;
 }
 
+pub fn parse_alter(self: *Parser) ParserError!ast.AlterTableStatement {
+    const stmt = self.allocator.create(ast.AlterTableStatement) catch return error.OutOfMemory;
+
+    self.advance(); // consume ALTER
+
+    if (self.current.type != token.TokenType.table) {
+        self.addError("Expected TABLE after ALTER", .{});
+        return error.UnexpectedToken;
+    }
+    self.advance();
+
+    if (self.current.type != token.TokenType.ident) {
+        self.addError("Expected table name", .{});
+        return error.ExpectedIdentifier;
+    }
+    stmt.table = self.current.literal;
+    self.advance();
+
+    if (self.current.type == token.TokenType.add) {
+        self.advance();
+        if (self.current.type == token.TokenType.column) {
+            self.advance();
+        }
+        stmt.action = ast.AlterAction{ .add_column = try parse_column_def(self) };
+    } else if (self.current.type == token.TokenType.drop) {
+        self.advance();
+        if (self.current.type == token.TokenType.column) {
+            self.advance();
+        }
+        if (self.current.type != token.TokenType.ident) {
+            self.addError("Expected column name", .{});
+            return error.ExpectedIdentifier;
+        }
+        stmt.action = ast.AlterAction{ .drop_column = self.current.literal };
+        self.advance();
+    } else if (self.current.type == token.TokenType.rename) {
+        self.advance();
+        if (self.current.type == token.TokenType.to) {
+            self.advance();
+            if (self.current.type != token.TokenType.ident) {
+                self.addError("Expected new table name", .{});
+                return error.ExpectedIdentifier;
+            }
+            stmt.action = ast.AlterAction{ .rename_table = self.current.literal };
+            self.advance();
+        } else if (self.current.type == token.TokenType.column) {
+            self.advance();
+            if (self.current.type != token.TokenType.ident) {
+                self.addError("Expected column name", .{});
+                return error.ExpectedIdentifier;
+            }
+            const old_name = self.current.literal;
+            self.advance();
+            if (self.current.type != token.TokenType.to) {
+                self.addError("Expected TO after column name", .{});
+                return error.UnexpectedToken;
+            }
+            self.advance();
+            if (self.current.type != token.TokenType.ident) {
+                self.addError("Expected new column name", .{});
+                return error.ExpectedIdentifier;
+            }
+            stmt.action = ast.AlterAction{ .rename_column = .{ .old_name = old_name, .new_name = self.current.literal } };
+            self.advance();
+        } else {
+            self.addError("Expected TO or COLUMN after RENAME", .{});
+            return error.UnexpectedToken;
+        }
+    } else {
+        self.addError("Expected ADD, DROP, or RENAME", .{});
+        return error.UnexpectedToken;
+    }
+
+    if (self.current.type == token.TokenType.semicolon) {
+        self.advance();
+    }
+
+    return stmt.*;
+}
+
+fn parse_column_def(self: *Parser) ParserError!ast.ColumnDef {
+    var col = ast.ColumnDef{
+        .name = "",
+        .type_name = "",
+        .primary_key = false,
+        .not_null = false,
+    };
+
+    if (self.current.type != token.TokenType.ident) {
+        self.addError("Expected column name", .{});
+        return error.ExpectedIdentifier;
+    }
+    col.name = self.current.literal;
+    self.advance();
+
+    col.type_name = switch (self.current.type) {
+        .integer => "INTEGER",
+        .text => "TEXT",
+        .real => "REAL",
+        .blob => "BLOB",
+        .boolean => "BOOLEAN",
+        .date => "DATE",
+        .time => "TIME",
+        .datetime => "DATETIME",
+        else => {
+            self.addError("Expected column type", .{});
+            return error.ExpectedColumnType;
+        },
+    };
+    self.advance();
+
+    while (self.current.type == token.TokenType.primary or
+        self.current.type == token.TokenType.not)
+    {
+        if (self.current.type == token.TokenType.primary) {
+            self.advance();
+            if (self.current.type != token.TokenType.key) {
+                return error.ExpectedKeyKeyword;
+            }
+            col.primary_key = true;
+            self.advance();
+        } else if (self.current.type == token.TokenType.not) {
+            self.advance();
+            if (self.current.type != token.TokenType.null) {
+                return error.ExpectedNullKeyword;
+            }
+            col.not_null = true;
+            self.advance();
+        }
+    }
+
+    return col;
+}
+
 fn parse_assignments(self: *Parser) ParserError![]ast.Assignment {
     var assignments = std.ArrayList(ast.Assignment){};
     defer assignments.deinit(self.allocator);

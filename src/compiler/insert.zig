@@ -11,33 +11,42 @@ pub fn compile_insert(c: *Compiler, stmt: InsertStatement) !void {
 
     _ = try c.emit(.open_write, 0, 0, 0, stmt.table, null);
 
-    for (stmt.value_rows) |values| {
-        const start_reg = c.next_reg;
+    switch (stmt.source) {
+        .values => |value_rows| {
+            for (value_rows) |values| {
+                const start_reg = c.next_reg;
 
-        for (schema.columns, 0..) |col, i| {
-            const reg = c.alloc_reg();
+                for (schema.columns, 0..) |col, i| {
+                    const reg = c.alloc_reg();
 
-            var found = false;
-            if (stmt.columns.len > 0) {
-                for (stmt.columns, 0..) |col_name, val_idx| {
-                    if (std.mem.eql(u8, col_name, col.name) and val_idx < values.len) {
-                        try compile_value_expression(c, values[val_idx], reg);
+                    var found = false;
+                    if (stmt.columns.len > 0) {
+                        for (stmt.columns, 0..) |col_name, val_idx| {
+                            if (std.mem.eql(u8, col_name, col.name) and val_idx < values.len) {
+                                try compile_value_expression(c, values[val_idx], reg);
+                                found = true;
+                                break;
+                            }
+                        }
+                    } else if (i < values.len) {
+                        try compile_value_expression(c, values[i], reg);
                         found = true;
-                        break;
+                    }
+
+                    if (!found) {
+                        _ = try c.emit(.null, reg, 0, 0, "", null);
                     }
                 }
-            } else if (i < values.len) {
-                try compile_value_expression(c, values[i], reg);
-                found = true;
-            }
 
-            if (!found) {
-                _ = try c.emit(.null, reg, 0, 0, "", null);
+                _ = try c.emit(.insert, 0, start_reg, @intCast(schema.columns.len), "", null);
+                c.next_reg = @intCast(start_reg);
             }
-        }
-
-        _ = try c.emit(.insert, 0, start_reg, @intCast(schema.columns.len), "", null);
-        c.next_reg = @intCast(start_reg);
+        },
+        .select => |select_stmt| {
+            const select_ptr = c.allocator.create(ast.SelectStatement) catch return CompilerError.OutOfMemory;
+            select_ptr.* = select_stmt;
+            _ = try c.emit(.insert_select, 0, @intCast(schema.columns.len), @intCast(stmt.columns.len), stmt.table, @ptrCast(select_ptr));
+        },
     }
 
     _ = try c.emit(.close, 0, 0, 0, "", null);

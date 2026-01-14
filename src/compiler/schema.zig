@@ -77,6 +77,33 @@ fn map_column_type(parser_type: []const u8) Type {
     }
 }
 
+pub fn compile_alter_table(c: *Compiler, stmt: ast.AlterTableStatement) !void {
+    switch (stmt.action) {
+        .add_column => |col_def| {
+            const col_ptr = try c.persistent_allocator.create(Column);
+            col_ptr.* = Column{
+                .name = try c.persistent_allocator.dupe(u8, col_def.name),
+                .type = map_column_type(col_def.type_name),
+                .primary_key = col_def.primary_key,
+                .not_null = col_def.not_null,
+            };
+            _ = try c.emit(.alter_add_column, 0, 0, 0, stmt.table, @ptrCast(col_ptr));
+        },
+        .drop_column => |col_name| {
+            _ = try c.emit(.alter_drop_column, 0, 0, 0, stmt.table, @ptrCast(@constCast(col_name.ptr)));
+        },
+        .rename_table => |new_name| {
+            _ = try c.emit(.alter_rename_table, 0, 0, 0, stmt.table, @ptrCast(@constCast(new_name.ptr)));
+        },
+        .rename_column => |rename| {
+            const names = try c.persistent_allocator.alloc([]const u8, 2);
+            names[0] = try c.persistent_allocator.dupe(u8, rename.old_name);
+            names[1] = try c.persistent_allocator.dupe(u8, rename.new_name);
+            _ = try c.emit(.alter_rename_column, 0, 0, 0, stmt.table, @ptrCast(names.ptr));
+        },
+    }
+}
+
 test "compile create table" {
     const allocator = std.testing.allocator;
     const Pager = @import("../storage/pager.zig").Pager;

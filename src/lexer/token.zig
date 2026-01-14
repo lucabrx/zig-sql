@@ -106,6 +106,10 @@ pub const TokenType = enum {
     as,
     @"union",
     all,
+    alter,
+    add,
+    column,
+    rename,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -210,6 +214,10 @@ pub const TokenType = enum {
             .as => "AS",
             .@"union" => "UNION",
             .all => "ALL",
+            .alter => "ALTER",
+            .add => "ADD",
+            .column => "COLUMN",
+            .rename => "RENAME",
         };
     }
 };
@@ -301,6 +309,10 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "AS", .as },
     .{ "UNION", .@"union" },
     .{ "ALL", .all },
+    .{ "ALTER", .alter },
+    .{ "ADD", .add },
+    .{ "COLUMN", .column },
+    .{ "RENAME", .rename },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

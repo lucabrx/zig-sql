@@ -283,6 +283,10 @@ pub const Parser = struct {
                 }
                 return ast.Statement{ .set_transaction_stmt = ast.SetTransactionStatement{ .isolation_level = level } };
             },
+            token.TokenType.alter => {
+                const stmt = try other.parse_alter(self);
+                return ast.Statement{ .alter_table_stmt = stmt };
+            },
             else => {
                 self.addError("Unexpected token '{s}' at start of statement", .{@tagName(self.current.type)});
                 return error.UnexpectedToken;

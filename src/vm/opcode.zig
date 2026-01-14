@@ -88,6 +88,11 @@ pub const Opcode = enum(u8) {
     limit_results,
     union_start,
     union_merge,
+    insert_select,
+    alter_add_column,
+    alter_drop_column,
+    alter_rename_table,
+    alter_rename_column,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -153,6 +158,11 @@ pub const Opcode = enum(u8) {
             .limit_results => "LIMIT_RESULTS",
             .union_start => "UNION_START",
             .union_merge => "UNION_MERGE",
+            .insert_select => "INSERT_SELECT",
+            .alter_add_column => "ALTER_ADD_COLUMN",
+            .alter_drop_column => "ALTER_DROP_COLUMN",
+            .alter_rename_table => "ALTER_RENAME_TABLE",
+            .alter_rename_column => "ALTER_RENAME_COLUMN",
         };
     }
 };

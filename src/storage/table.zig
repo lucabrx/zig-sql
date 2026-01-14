@@ -419,6 +419,97 @@ pub const Database = struct {
         }
     }
 
+    pub fn alter_add_column(self: *Database, table_name: []const u8, col: schema_mod.Column) !void {
+        const table = try self.get_table(table_name);
+        const old_schema = table.schema;
+
+        var new_columns = try self.allocator.alloc(schema_mod.Column, old_schema.columns.len + 1);
+        for (old_schema.columns, 0..) |old_col, i| {
+            new_columns[i] = old_col;
+        }
+        new_columns[old_schema.columns.len] = schema_mod.Column{
+            .name = try self.allocator.dupe(u8, col.name),
+            .type = col.type,
+            .primary_key = col.primary_key,
+            .not_null = col.not_null,
+        };
+
+        const new_schema = try self.allocator.create(Schema);
+        new_schema.* = Schema.init(old_schema.table_name, new_columns);
+
+        self.allocator.free(old_schema.columns);
+        self.allocator.destroy(@constCast(old_schema));
+
+        table.schema = new_schema;
+        try self.save_catalog();
+    }
+
+    pub fn alter_drop_column(self: *Database, table_name: []const u8, col_name: []const u8) !void {
+        const table = try self.get_table(table_name);
+        const old_schema = table.schema;
+
+        var col_idx: ?usize = null;
+        for (old_schema.columns, 0..) |col, i| {
+            if (std.mem.eql(u8, col.name, col_name)) {
+                col_idx = i;
+                break;
+            }
+        }
+        if (col_idx == null) return StorageError.ColumnNotFound;
+
+        if (old_schema.columns.len <= 1) return;
+
+        var new_columns = try self.allocator.alloc(schema_mod.Column, old_schema.columns.len - 1);
+        var j: usize = 0;
+        for (old_schema.columns, 0..) |col, i| {
+            if (i == col_idx.?) {
+                self.allocator.free(col.name);
+                continue;
+            }
+            new_columns[j] = col;
+            j += 1;
+        }
+
+        const new_schema = try self.allocator.create(Schema);
+        new_schema.* = Schema.init(old_schema.table_name, new_columns);
+
+        self.allocator.free(old_schema.columns);
+        self.allocator.destroy(@constCast(old_schema));
+
+        table.schema = new_schema;
+        try self.save_catalog();
+    }
+
+    pub fn alter_rename_table(self: *Database, old_name: []const u8, new_name: []const u8) !void {
+        const kv = self.tables.fetchRemove(old_name) orelse return StorageError.TableNotFound;
+        const table = kv.value;
+
+        const owned_new_name = try self.allocator.dupe(u8, new_name);
+        self.allocator.free(table.schema.table_name);
+
+        const new_schema = try self.allocator.create(Schema);
+        new_schema.* = Schema.init(owned_new_name, table.schema.columns);
+        self.allocator.destroy(@constCast(table.schema));
+        table.schema = new_schema;
+
+        self.allocator.free(kv.key);
+        try self.tables.put(owned_new_name, table);
+        try self.save_catalog();
+    }
+
+    pub fn alter_rename_column(self: *Database, table_name: []const u8, old_col_name: []const u8, new_col_name: []const u8) !void {
+        const table = try self.get_table(table_name);
+
+        for (table.schema.columns) |*col| {
+            if (std.mem.eql(u8, col.name, old_col_name)) {
+                self.allocator.free(col.name);
+                col.name = try self.allocator.dupe(u8, new_col_name);
+                break;
+            }
+        }
+        try self.save_catalog();
+    }
+
     pub fn close(self: *Database) void {
         self.save_metadata() catch {};
 

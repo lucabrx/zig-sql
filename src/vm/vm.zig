@@ -291,6 +291,11 @@ pub const VM = struct {
             .limit_results => self.op_limit_results(inst),
             .union_start => self.op_union_start(inst),
             .union_merge => self.op_union_merge(inst),
+            .insert_select => try self.op_insert_select(inst),
+            .alter_add_column => try self.op_alter_add_column(inst),
+            .alter_drop_column => try self.op_alter_drop_column(inst),
+            .alter_rename_table => try self.op_alter_rename_table(inst),
+            .alter_rename_column => try self.op_alter_rename_column(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -983,6 +988,104 @@ pub const VM = struct {
             }
         }
         return hasher.final();
+    }
+
+    fn op_insert_select(self: *VM, inst: Instruction) !void {
+        const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
+        const num_cols: usize = @intCast(inst.p2);
+
+        if (inst.p5) |ptr| {
+            const ast = @import("../parser/ast.zig");
+            const Compiler = @import("../compiler/compiler.zig").Compiler;
+
+            const select_stmt: *ast.SelectStatement = @ptrCast(@alignCast(ptr));
+
+            var sub_compiler = Compiler.init(self.allocator, self.allocator, self.db);
+            defer sub_compiler.deinit();
+
+            const sub_instructions = sub_compiler.compile(ast.Statement{ .select_stmt = select_stmt.* }) catch {
+                self.pc += 1;
+                return;
+            };
+
+            var sub_vm = VM.init(self.allocator, self.db);
+            sub_vm.set_debug(false);
+            defer sub_vm.deinit();
+
+            sub_vm.load(sub_instructions);
+            if (sub_vm.run_subquery()) {
+                const sub_results = sub_vm.get_results();
+
+                for (sub_results) |row| {
+                    var values: [MAX_REGISTERS]storage.RowValue = undefined;
+                    const cols_to_use = @min(row.len, num_cols);
+
+                    for (0..cols_to_use) |i| {
+                        values[i] = row[i].to_row_value();
+                    }
+                    for (cols_to_use..num_cols) |i| {
+                        values[i] = storage.RowValue{ .null_val = {} };
+                    }
+
+                    const key: u32 = switch (values[0]) {
+                        .integer => |v| @intCast(v),
+                        else => 0,
+                    };
+
+                    var dyn_row = storage.DynamicRow.init();
+                    dyn_row.serialize_values(table.schema, values[0..num_cols]) catch continue;
+
+                    self.db.insert_into_indexes(table.schema.table_name, key, &dyn_row) catch {};
+                    self.db.transaction.save_page_for_rollback(table.btree.root_page) catch {};
+                    table.insert(key, &dyn_row) catch continue;
+                    self.db.wal_log_page(table.btree.root_page) catch {};
+                }
+            } else |_| {}
+        }
+
+        self.pc += 1;
+    }
+
+    fn op_alter_add_column(self: *VM, inst: Instruction) !void {
+        const table_name = inst.p4;
+        if (inst.p5) |ptr| {
+            const col: *storage.Column = @ptrCast(@alignCast(ptr));
+            self.db.alter_add_column(table_name, col.*) catch {};
+        }
+        self.pc += 1;
+    }
+
+    fn op_alter_drop_column(self: *VM, inst: Instruction) !void {
+        const table_name = inst.p4;
+        if (inst.p5) |ptr| {
+            const col_name_ptr: [*]const u8 = @ptrCast(ptr);
+            var len: usize = 0;
+            while (col_name_ptr[len] != 0 and len < 256) : (len += 1) {}
+            const col_name = col_name_ptr[0..len];
+            self.db.alter_drop_column(table_name, col_name) catch {};
+        }
+        self.pc += 1;
+    }
+
+    fn op_alter_rename_table(self: *VM, inst: Instruction) !void {
+        const old_name = inst.p4;
+        if (inst.p5) |ptr| {
+            const new_name_ptr: [*]const u8 = @ptrCast(ptr);
+            var len: usize = 0;
+            while (new_name_ptr[len] != 0 and len < 256) : (len += 1) {}
+            const new_name = new_name_ptr[0..len];
+            self.db.alter_rename_table(old_name, new_name) catch {};
+        }
+        self.pc += 1;
+    }
+
+    fn op_alter_rename_column(self: *VM, inst: Instruction) !void {
+        const table_name = inst.p4;
+        if (inst.p5) |ptr| {
+            const names: *[2][]const u8 = @ptrCast(@alignCast(ptr));
+            self.db.alter_rename_column(table_name, names[0], names[1]) catch {};
+        }
+        self.pc += 1;
     }
 
     fn eval_const_expr(self: *VM, expr: @import("../parser/ast.zig").Expression) RegisterValue {

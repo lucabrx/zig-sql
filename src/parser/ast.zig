@@ -105,6 +105,7 @@ pub const Statement = union(enum) {
     release_savepoint_stmt: ReleaseSavepointStatement,
     set_transaction_stmt: SetTransactionStatement,
     union_stmt: UnionStatement,
+    alter_table_stmt: AlterTableStatement,
 };
 
 pub const Node = union(enum) {
@@ -148,7 +149,12 @@ pub const OrderBy = struct {
 pub const InsertStatement = struct {
     table: []const u8,
     columns: []const []const u8,
-    value_rows: []const []const Expression,
+    source: InsertSource,
+};
+
+pub const InsertSource = union(enum) {
+    values: []const []const Expression,
+    select: SelectStatement,
 };
 
 pub const CreateTableStatement = struct {
@@ -221,6 +227,18 @@ pub const UnionStatement = struct {
 pub const UnionOrSelect = union(enum) {
     select: SelectStatement,
     union_stmt: UnionStatement,
+};
+
+pub const AlterTableStatement = struct {
+    table: []const u8,
+    action: AlterAction,
+};
+
+pub const AlterAction = union(enum) {
+    add_column: ColumnDef,
+    drop_column: []const u8,
+    rename_table: []const u8,
+    rename_column: struct { old_name: []const u8, new_name: []const u8 },
 };
 
 pub const CreateIndexStatement = struct {
