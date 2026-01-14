@@ -101,6 +101,7 @@ pub const REPL = struct {
             \\ .indexes    - List all indexes
             \\ .debug      - Toggle debug mode
             \\ .checkpoint - Force WAL checkpoint
+            \\ .sync       - Sync all pages to disk
             \\
         );
     }
@@ -113,6 +114,7 @@ pub const REPL = struct {
             indexes,
             debug,
             checkpoint,
+            sync,
         };
 
         const command = std.meta.stringToEnum(MetaCmd, cmd[1..]) orelse {
@@ -136,6 +138,15 @@ pub const REPL = struct {
                     return .Success;
                 };
                 try self.writer.writeAll("Checkpoint complete.\n");
+                return .Success;
+            },
+            .sync => {
+                const pager = self.pager orelse return .Success;
+                pager.sync() catch |err| {
+                    try self.writer.print("Sync error: {s}\n", .{@errorName(err)});
+                    return .Success;
+                };
+                try self.writer.writeAll("Sync complete.\n");
                 return .Success;
             },
             .tables => {

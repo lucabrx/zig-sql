@@ -250,6 +250,7 @@ pub const Wal = struct {
         if (!self.enabled) return;
 
         try pager.flush();
+        try pager.sync();
 
         const f = self.file orelse return;
         try f.seekTo(0);
@@ -263,6 +264,7 @@ pub const Wal = struct {
 
         const header_bytes = std.mem.asBytes(&header);
         try f.writeAll(header_bytes);
+        try f.sync();
 
         print("[WAL] Checkpoint complete (seq={})\n", .{self.current_seq});
     }

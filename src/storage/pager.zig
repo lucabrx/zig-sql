@@ -2,23 +2,13 @@ const std = @import("std");
 const fs = std.fs;
 const print = std.debug.print;
 
-// [  Page 0 (4096 bytes)  ]
-// |-----------------------|
-// | Header (Node info)    |  <-- ~14 bytes
-// |-----------------------|
-// | Row 1 (Alice)         |  <-- 291 bytes
-// |-----------------------|
-// |                       |
-// |   (Empty Space)       |  <-- ~3791 bytes of Zeros
-// |                       |
-// |-----------------------|
-
-pub const PAGE_SIZE: usize = 4096; // 4KB
-pub const MAX_PAGES: usize = 100; // temp
+pub const PAGE_SIZE: usize = 4096;
+pub const MAX_PAGES: usize = 100;
+const CHECKSUM_OFFSET: usize = PAGE_SIZE - 4;
 
 pub const Page = struct {
     data: [PAGE_SIZE]u8,
-    dirty: bool, // indicates if the page has been modified
+    dirty: bool,
 
     pub fn init() Page {
         return Page{
@@ -28,6 +18,32 @@ pub const Page = struct {
     }
 };
 
+fn compute_checksum(data: []const u8) u32 {
+    var hash: u32 = 0;
+    for (data[0..CHECKSUM_OFFSET]) |byte| {
+        hash = hash *% 31 +% byte;
+    }
+    return hash;
+}
+
+fn write_checksum(data: *[PAGE_SIZE]u8) void {
+    const checksum = compute_checksum(data);
+    std.mem.writeInt(u32, data[CHECKSUM_OFFSET..][0..4], checksum, .little);
+}
+
+fn verify_checksum(data: *const [PAGE_SIZE]u8) bool {
+    const stored = std.mem.readInt(u32, data[CHECKSUM_OFFSET..][0..4], .little);
+    const computed = compute_checksum(data);
+    return stored == computed or stored == 0;
+}
+
+pub const PagerError = error{
+    PageOutOfBounds,
+    PageNotFound,
+    IncompleteRead,
+    PageCorrupted,
+};
+
 pub const Pager = struct {
     file: ?fs.File,
     file_length: u64,
@@ -35,10 +51,15 @@ pub const Pager = struct {
     pages: [MAX_PAGES]?*Page,
     allocator: std.mem.Allocator,
     in_memory: bool,
+    use_checksums: bool,
 
     pub fn init(allocator: std.mem.Allocator, filename: []const u8) !Pager {
+        return initWithOptions(allocator, filename, true);
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, filename: []const u8, use_checksums: bool) !Pager {
         var pages: [MAX_PAGES]?*Page = undefined;
-        @memset(&pages, null); // sets all entries to null
+        @memset(&pages, null);
 
         if (std.mem.eql(u8, filename, ":memory:")) {
             return Pager{
@@ -48,6 +69,7 @@ pub const Pager = struct {
                 .pages = pages,
                 .allocator = allocator,
                 .in_memory = true,
+                .use_checksums = false,
             };
         }
 
@@ -70,6 +92,7 @@ pub const Pager = struct {
             .pages = pages,
             .allocator = allocator,
             .in_memory = false,
+            .use_checksums = use_checksums,
         };
     }
 
@@ -107,6 +130,12 @@ pub const Pager = struct {
                 try f.seekTo(offset);
                 const bytes_read = try f.read(&page.data);
                 if (bytes_read != PAGE_SIZE) return error.IncompleteRead;
+
+                if (self.use_checksums and !verify_checksum(&page.data)) {
+                    print("[PAGER] ERROR: Page {} checksum mismatch - corrupted!\n", .{page_num});
+                    self.allocator.destroy(page);
+                    return error.PageCorrupted;
+                }
             }
             print("[PAGER] Loaded page {} from disk\n", .{page_num});
         } else {
@@ -129,6 +158,10 @@ pub const Pager = struct {
         if (page_ptr == null) return error.PageNotFound;
         const page = page_ptr.?;
 
+        if (self.use_checksums) {
+            write_checksum(&page.data);
+        }
+
         const offset = @as(u64, page_num) * PAGE_SIZE;
         if (self.file) |f| {
             try f.seekTo(offset);
@@ -148,6 +181,15 @@ pub const Pager = struct {
                     try self.flush_page(idx);
                 }
             }
+        }
+    }
+
+    pub fn sync(self: *Pager) !void {
+        if (self.in_memory) return;
+        try self.flush();
+        if (self.file) |f| {
+            try f.sync();
+            print("[PAGER] Synced to disk\n", .{});
         }
     }
 
@@ -175,7 +217,6 @@ pub const Pager = struct {
 
 test "page initialization" {
     const page = Page.init();
-
     for (page.data) |byte| {
         try std.testing.expectEqual(0, byte);
     }
@@ -185,7 +226,6 @@ test "page initialization" {
 test "in-memory pager creation" {
     var pager = try Pager.init(std.testing.allocator, ":memory:");
     defer pager.deinit();
-
     try std.testing.expect(pager.in_memory);
     try std.testing.expect(pager.file == null);
     try std.testing.expectEqual(0, pager.num_pages);
@@ -194,14 +234,11 @@ test "in-memory pager creation" {
 test "in-memory pager page allocation" {
     var pager = try Pager.init(std.testing.allocator, ":memory:");
     defer pager.deinit();
-
     const page0 = try pager.get_page(0);
     try std.testing.expectEqual(1, pager.num_pages);
-
     page0.data[0] = 42;
     pager.mark_dirty(0);
     try std.testing.expect(page0.dirty);
-
     const page0_again = try pager.get_page(0);
     try std.testing.expectEqual(42, page0_again.data[0]);
 }
@@ -209,15 +246,12 @@ test "in-memory pager page allocation" {
 test "in-memory pager multiple pages" {
     var pager = try Pager.init(std.testing.allocator, ":memory:");
     defer pager.deinit();
-
     const page0 = try pager.get_page(0);
     const page1 = try pager.get_page(1);
     const page2 = try pager.get_page(2);
-
     page0.data[0] = 10;
     page1.data[0] = 20;
     page2.data[0] = 30;
-
     try std.testing.expectEqual(3, pager.num_pages);
     try std.testing.expectEqual(10, page0.data[0]);
     try std.testing.expectEqual(20, page1.data[0]);
@@ -227,7 +261,6 @@ test "in-memory pager multiple pages" {
 test "pager page out of bounds" {
     var pager = try Pager.init(std.testing.allocator, ":memory:");
     defer pager.deinit();
-
     const result = pager.get_page(MAX_PAGES);
     try std.testing.expectError(error.PageOutOfBounds, result);
 }
@@ -235,10 +268,18 @@ test "pager page out of bounds" {
 test "pager mark dirty" {
     var pager = try Pager.init(std.testing.allocator, ":memory:");
     defer pager.deinit();
-
     const page = try pager.get_page(0);
     try std.testing.expect(!page.dirty);
-
     pager.mark_dirty(0);
     try std.testing.expect(page.dirty);
+}
+
+test "checksum computation" {
+    var data: [PAGE_SIZE]u8 = std.mem.zeroes([PAGE_SIZE]u8);
+    data[0] = 42;
+    data[100] = 255;
+    write_checksum(&data);
+    try std.testing.expect(verify_checksum(&data));
+    data[50] = 1;
+    try std.testing.expect(!verify_checksum(&data));
 }

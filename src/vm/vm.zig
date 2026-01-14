@@ -438,6 +438,7 @@ pub const VM = struct {
     fn op_txn_commit(self: *VM) !void {
         try self.db.wal_commit();
         try self.db.transaction.commit();
+        try self.db.pager.sync();
         self.pc += 1;
     }
 
