@@ -24,6 +24,8 @@ pub const Statement = union(enum) {
     begin_stmt: BeginStatement,
     commit_stmt: CommitStatement,
     rollback_stmt: RollbackStatement,
+    savepoint_stmt: SavepointStatement,
+    release_savepoint_stmt: ReleaseSavepointStatement,
 };
 
 pub const Node = union(enum) {
@@ -93,7 +95,15 @@ pub const DropIndexStatement = struct {
 
 pub const BeginStatement = struct {};
 pub const CommitStatement = struct {};
-pub const RollbackStatement = struct {};
+pub const RollbackStatement = struct {
+    savepoint_name: ?[]const u8 = null,
+};
+pub const SavepointStatement = struct {
+    name: []const u8,
+};
+pub const ReleaseSavepointStatement = struct {
+    name: []const u8,
+};
 
 pub const CreateIndexStatement = struct {
     index_name: []const u8,

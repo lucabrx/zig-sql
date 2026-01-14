@@ -49,7 +49,15 @@ pub const Compiler = struct {
             .drop_index_stmt => |s| try schema.compile_drop_index(self, s),
             .begin_stmt => _ = try self.emit(.txn_begin, 0, 0, 0, "", null),
             .commit_stmt => _ = try self.emit(.txn_commit, 0, 0, 0, "", null),
-            .rollback_stmt => _ = try self.emit(.txn_rollback, 0, 0, 0, "", null),
+            .rollback_stmt => |s| {
+                if (s.savepoint_name) |name| {
+                    _ = try self.emit(.txn_rollback_to, 0, 0, 0, name, null);
+                } else {
+                    _ = try self.emit(.txn_rollback, 0, 0, 0, "", null);
+                }
+            },
+            .savepoint_stmt => |s| _ = try self.emit(.txn_savepoint, 0, 0, 0, s.name, null),
+            .release_savepoint_stmt => |s| _ = try self.emit(.txn_release, 0, 0, 0, s.name, null),
         }
 
         _ = try self.emit(.halt, 0, 0, 0, "", null);

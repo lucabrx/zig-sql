@@ -67,6 +67,9 @@ pub const Opcode = enum(u8) {
     txn_begin,
     txn_commit,
     txn_rollback,
+    txn_savepoint,
+    txn_release,
+    txn_rollback_to,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -114,6 +117,9 @@ pub const Opcode = enum(u8) {
             .txn_begin => "TXN_BEGIN",
             .txn_commit => "TXN_COMMIT",
             .txn_rollback => "TXN_ROLLBACK",
+            .txn_savepoint => "TXN_SAVEPOINT",
+            .txn_release => "TXN_RELEASE",
+            .txn_rollback_to => "TXN_ROLLBACK_TO",
         };
     }
 };

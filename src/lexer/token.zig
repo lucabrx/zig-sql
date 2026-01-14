@@ -75,6 +75,9 @@ pub const TokenType = enum {
     commit,
     rollback,
     transaction,
+    savepoint,
+    release,
+    to,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -143,6 +146,9 @@ pub const TokenType = enum {
             .commit => "COMMIT",
             .rollback => "ROLLBACK",
             .transaction => "TRANSACTION",
+            .savepoint => "SAVEPOINT",
+            .release => "RELEASE",
+            .to => "TO",
         };
     }
 };
@@ -198,6 +204,9 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "COMMIT", .commit },
     .{ "ROLLBACK", .rollback },
     .{ "TRANSACTION", .transaction },
+    .{ "SAVEPOINT", .savepoint },
+    .{ "RELEASE", .release },
+    .{ "TO", .to },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

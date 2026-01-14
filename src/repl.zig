@@ -376,8 +376,18 @@ pub const REPL = struct {
             .commit_stmt => {
                 try self.writer.writeAll("COMMIT\n");
             },
-            .rollback_stmt => {
-                try self.writer.writeAll("ROLLBACK\n");
+            .rollback_stmt => |rs| {
+                if (rs.savepoint_name) |name| {
+                    try self.writer.print("ROLLBACK TO SAVEPOINT {s}\n", .{name});
+                } else {
+                    try self.writer.writeAll("ROLLBACK\n");
+                }
+            },
+            .savepoint_stmt => |sp| {
+                try self.writer.print("SAVEPOINT {s}\n", .{sp.name});
+            },
+            .release_savepoint_stmt => |sp| {
+                try self.writer.print("RELEASE SAVEPOINT {s}\n", .{sp.name});
             },
         }
     }

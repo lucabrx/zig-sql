@@ -173,10 +173,55 @@ pub const Parser = struct {
             },
             token.TokenType.rollback => {
                 self.advance();
+                if (self.current.type == token.TokenType.to) {
+                    self.advance();
+                    if (self.current.type == token.TokenType.savepoint) {
+                        self.advance();
+                    }
+                    if (self.current.type != token.TokenType.ident) {
+                        self.addError("Expected savepoint name after ROLLBACK TO", .{});
+                        return error.ExpectedIdentifier;
+                    }
+                    const name = self.current.literal;
+                    self.advance();
+                    if (self.current.type == token.TokenType.semicolon) {
+                        self.advance();
+                    }
+                    return ast.Statement{ .rollback_stmt = ast.RollbackStatement{ .savepoint_name = name } };
+                }
                 if (self.current.type == token.TokenType.semicolon) {
                     self.advance();
                 }
                 return ast.Statement{ .rollback_stmt = ast.RollbackStatement{} };
+            },
+            token.TokenType.savepoint => {
+                self.advance();
+                if (self.current.type != token.TokenType.ident) {
+                    self.addError("Expected savepoint name", .{});
+                    return error.ExpectedIdentifier;
+                }
+                const name = self.current.literal;
+                self.advance();
+                if (self.current.type == token.TokenType.semicolon) {
+                    self.advance();
+                }
+                return ast.Statement{ .savepoint_stmt = ast.SavepointStatement{ .name = name } };
+            },
+            token.TokenType.release => {
+                self.advance();
+                if (self.current.type == token.TokenType.savepoint) {
+                    self.advance();
+                }
+                if (self.current.type != token.TokenType.ident) {
+                    self.addError("Expected savepoint name after RELEASE", .{});
+                    return error.ExpectedIdentifier;
+                }
+                const name = self.current.literal;
+                self.advance();
+                if (self.current.type == token.TokenType.semicolon) {
+                    self.advance();
+                }
+                return ast.Statement{ .release_savepoint_stmt = ast.ReleaseSavepointStatement{ .name = name } };
             },
             else => {
                 self.addError("Unexpected token '{s}' at start of statement", .{@tagName(self.current.type)});

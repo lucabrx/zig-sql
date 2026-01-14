@@ -201,6 +201,9 @@ pub const VM = struct {
             .txn_begin => try self.op_txn_begin(),
             .txn_commit => try self.op_txn_commit(),
             .txn_rollback => try self.op_txn_rollback(),
+            .txn_savepoint => try self.op_txn_savepoint(inst),
+            .txn_release => try self.op_txn_release(inst),
+            .txn_rollback_to => try self.op_txn_rollback_to(inst),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .delete => try self.op_delete(inst),
             else => return VmErrors.InvalidOp,
@@ -434,6 +437,21 @@ pub const VM = struct {
 
     fn op_txn_rollback(self: *VM) !void {
         try self.db.transaction.rollback();
+        self.pc += 1;
+    }
+
+    fn op_txn_savepoint(self: *VM, inst: Instruction) !void {
+        try self.db.transaction.savepoint(inst.p4);
+        self.pc += 1;
+    }
+
+    fn op_txn_release(self: *VM, inst: Instruction) !void {
+        try self.db.transaction.release_savepoint(inst.p4);
+        self.pc += 1;
+    }
+
+    fn op_txn_rollback_to(self: *VM, inst: Instruction) !void {
+        try self.db.transaction.rollback_to_savepoint(inst.p4);
         self.pc += 1;
     }
 
