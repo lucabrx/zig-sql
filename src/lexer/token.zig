@@ -71,6 +71,10 @@ pub const TokenType = enum {
     index,
     unique,
     on,
+    begin,
+    commit,
+    rollback,
+    transaction,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -135,6 +139,10 @@ pub const TokenType = enum {
             .index => "INDEX",
             .unique => "UNIQUE",
             .on => "ON",
+            .begin => "BEGIN",
+            .commit => "COMMIT",
+            .rollback => "ROLLBACK",
+            .transaction => "TRANSACTION",
         };
     }
 };
@@ -186,6 +194,10 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "INDEX", .index },
     .{ "UNIQUE", .unique },
     .{ "ON", .on },
+    .{ "BEGIN", .begin },
+    .{ "COMMIT", .commit },
+    .{ "ROLLBACK", .rollback },
+    .{ "TRANSACTION", .transaction },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

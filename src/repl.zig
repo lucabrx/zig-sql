@@ -370,6 +370,15 @@ pub const REPL = struct {
                 }
                 try self.writer.print(" {s}\n", .{drop_stmt.index_name});
             },
+            .begin_stmt => {
+                try self.writer.writeAll("BEGIN TRANSACTION\n");
+            },
+            .commit_stmt => {
+                try self.writer.writeAll("COMMIT\n");
+            },
+            .rollback_stmt => {
+                try self.writer.writeAll("ROLLBACK\n");
+            },
         }
     }
 

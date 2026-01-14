@@ -47,6 +47,9 @@ pub const Compiler = struct {
             .update_stmt => |s| try update.compile_update(self, s),
             .drop_table_stmt => |s| try schema.compile_drop_table(self, s),
             .drop_index_stmt => |s| try schema.compile_drop_index(self, s),
+            .begin_stmt => _ = try self.emit(.txn_begin, 0, 0, 0, "", null),
+            .commit_stmt => _ = try self.emit(.txn_commit, 0, 0, 0, "", null),
+            .rollback_stmt => _ = try self.emit(.txn_rollback, 0, 0, 0, "", null),
         }
 
         _ = try self.emit(.halt, 0, 0, 0, "", null);

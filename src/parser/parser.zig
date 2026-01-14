@@ -154,6 +154,30 @@ pub const Parser = struct {
                     .index => |stmt| ast.Statement{ .drop_index_stmt = stmt },
                 };
             },
+            token.TokenType.begin => {
+                self.advance();
+                if (self.current.type == token.TokenType.transaction) {
+                    self.advance();
+                }
+                if (self.current.type == token.TokenType.semicolon) {
+                    self.advance();
+                }
+                return ast.Statement{ .begin_stmt = ast.BeginStatement{} };
+            },
+            token.TokenType.commit => {
+                self.advance();
+                if (self.current.type == token.TokenType.semicolon) {
+                    self.advance();
+                }
+                return ast.Statement{ .commit_stmt = ast.CommitStatement{} };
+            },
+            token.TokenType.rollback => {
+                self.advance();
+                if (self.current.type == token.TokenType.semicolon) {
+                    self.advance();
+                }
+                return ast.Statement{ .rollback_stmt = ast.RollbackStatement{} };
+            },
             else => {
                 self.addError("Unexpected token '{s}' at start of statement", .{@tagName(self.current.type)});
                 return error.UnexpectedToken;

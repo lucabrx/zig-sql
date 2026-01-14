@@ -12,6 +12,7 @@ const Cursor = @import("cursor.zig").Cursor;
 const StorageError = @import("errors.zig").StorageError;
 const IndexBtree = @import("index_btree.zig").IndexBtree;
 const index_btree = @import("index_btree.zig");
+const Transaction = @import("transaction.zig").Transaction;
 
 const print = std.debug.print;
 
@@ -72,6 +73,7 @@ pub const Database = struct {
     index_btrees: std.StringHashMap(*IndexBtree),
     next_page: u32,
     allocator: std.mem.Allocator,
+    transaction: Transaction,
 
     const MAGIC: *const [4]u8 = "ZSQL";
     const VERSION: u32 = 1;
@@ -84,6 +86,7 @@ pub const Database = struct {
             .index_btrees = std.StringHashMap(*IndexBtree).init(allocator),
             .next_page = 1,
             .allocator = allocator,
+            .transaction = Transaction.init(allocator, pager),
         };
 
         if (pager.num_pages > 0) {
@@ -290,6 +293,7 @@ pub const Database = struct {
 
     pub fn close(self: *Database) void {
         self.save_metadata() catch {};
+        self.transaction.deinit();
 
         var iter = self.tables.iterator();
         while (iter.next()) |entry| {

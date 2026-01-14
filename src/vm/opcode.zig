@@ -60,8 +60,13 @@ pub const Opcode = enum(u8) {
     drop_table,
     drop_index,
 
+    // Index operations
     index_scan,
     index_next,
+
+    txn_begin,
+    txn_commit,
+    txn_rollback,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -106,6 +111,9 @@ pub const Opcode = enum(u8) {
             .drop_index => "DROP_INDEX",
             .index_scan => "INDEX_SCAN",
             .index_next => "INDEX_NEXT",
+            .txn_begin => "TXN_BEGIN",
+            .txn_commit => "TXN_COMMIT",
+            .txn_rollback => "TXN_ROLLBACK",
         };
     }
 };

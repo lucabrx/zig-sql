@@ -17,6 +17,7 @@ const storage = struct {
     const DynamicRow = row.DynamicRow;
     const RowValue = row.RowValue;
     const node = @import("../storage/node.zig");
+    const Transaction = @import("../storage/transaction.zig").Transaction;
 };
 
 const print = std.debug.print;
@@ -197,6 +198,9 @@ pub const VM = struct {
             .drop_index => try self.op_drop_index(inst),
             .index_scan => try self.op_index_scan(inst),
             .index_next => try self.op_index_next(inst),
+            .txn_begin => try self.op_txn_begin(),
+            .txn_commit => try self.op_txn_commit(),
+            .txn_rollback => try self.op_txn_rollback(),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .delete => try self.op_delete(inst),
             else => return VmErrors.InvalidOp,
@@ -323,6 +327,8 @@ pub const VM = struct {
 
         try self.db.insert_into_indexes(table.schema.table_name, key, &row);
 
+        try self.db.transaction.save_page_for_rollback(table.btree.root_page);
+
         try table.insert(key, &row);
         self.pc += 1;
     }
@@ -416,10 +422,26 @@ pub const VM = struct {
         self.pc = @intCast(inst.p2);
     }
 
+    fn op_txn_begin(self: *VM) !void {
+        try self.db.transaction.begin();
+        self.pc += 1;
+    }
+
+    fn op_txn_commit(self: *VM) !void {
+        try self.db.transaction.commit();
+        self.pc += 1;
+    }
+
+    fn op_txn_rollback(self: *VM) !void {
+        try self.db.transaction.rollback();
+        self.pc += 1;
+    }
+
     fn op_delete(self: *VM, inst: Instruction) !void {
         const cursor = self.cursors.getPtr(inst.p1) orelse return VmErrors.NoCursor;
         const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
-        const page = try self.db.pager.get_page(cursor.page_number());
+        const page_num = cursor.page_number();
+        const page = try self.db.pager.get_page(page_num);
         const num_cells = storage.node.get_num_cells(page);
         const cell_to_delete = cursor.cell_number();
 
@@ -427,6 +449,8 @@ pub const VM = struct {
         const row = storage.row.get_leaf_row(page, cell_to_delete, table.schema);
 
         self.db.delete_from_indexes(table.schema.table_name, rowid, &row) catch {};
+
+        try self.db.transaction.save_page_for_rollback(page_num);
 
         if (cell_to_delete < num_cells - 1) {
             var i: u32 = cell_to_delete;
@@ -440,7 +464,7 @@ pub const VM = struct {
             }
         }
         storage.node.set_num_cells(page, num_cells - 1);
-        self.db.pager.mark_dirty(cursor.page_number());
+        self.db.pager.mark_dirty(page_num);
         self.pc += 1;
     }
 

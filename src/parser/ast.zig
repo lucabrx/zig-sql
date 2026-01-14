@@ -21,6 +21,9 @@ pub const Statement = union(enum) {
     update_stmt: UpdateStatement,
     drop_table_stmt: DropTableStatement,
     drop_index_stmt: DropIndexStatement,
+    begin_stmt: BeginStatement,
+    commit_stmt: CommitStatement,
+    rollback_stmt: RollbackStatement,
 };
 
 pub const Node = union(enum) {
@@ -87,6 +90,10 @@ pub const DropIndexStatement = struct {
     index_name: []const u8,
     if_exists: bool,
 };
+
+pub const BeginStatement = struct {};
+pub const CommitStatement = struct {};
+pub const RollbackStatement = struct {};
 
 pub const CreateIndexStatement = struct {
     index_name: []const u8,
