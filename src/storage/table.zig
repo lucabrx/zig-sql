@@ -75,6 +75,7 @@ pub const Database = struct {
     tables: std.StringHashMap(*Table),
     indexes: std.StringHashMap(*schema_mod.IndexDef),
     index_btrees: std.StringHashMap(*IndexBtree),
+    auto_increment: std.StringHashMap(i64),
     next_page: u32,
     allocator: std.mem.Allocator,
     transaction: Transaction,
@@ -104,6 +105,7 @@ pub const Database = struct {
             .tables = std.StringHashMap(*Table).init(allocator),
             .indexes = std.StringHashMap(*schema_mod.IndexDef).init(allocator),
             .index_btrees = std.StringHashMap(*IndexBtree).init(allocator),
+            .auto_increment = std.StringHashMap(i64).init(allocator),
             .next_page = 2,
             .allocator = allocator,
             .transaction = Transaction.init(allocator, pager),
@@ -235,6 +237,23 @@ pub const Database = struct {
 
     pub fn get_table(self: *Database, name: []const u8) !*Table {
         return self.tables.get(name) orelse StorageError.TableNotFound;
+    }
+
+    pub fn next_auto_increment(self: *Database, table_name: []const u8) !i64 {
+        const gop = try self.auto_increment.getOrPut(table_name);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = 1;
+        }
+        const val = gop.value_ptr.*;
+        gop.value_ptr.* = val + 1;
+        return val;
+    }
+
+    pub fn update_auto_increment(self: *Database, table_name: []const u8, value: i64) !void {
+        const gop = try self.auto_increment.getOrPut(table_name);
+        if (!gop.found_existing or value >= gop.value_ptr.*) {
+            gop.value_ptr.* = value + 1;
+        }
     }
 
     pub fn drop_table(self: *Database, name: []const u8) !void {
@@ -553,6 +572,7 @@ pub const Database = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.indexes.deinit();
+        self.auto_increment.deinit();
 
         var btree_iter = self.index_btrees.iterator();
         while (btree_iter.next()) |entry| {

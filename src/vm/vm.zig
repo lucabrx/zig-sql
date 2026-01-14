@@ -430,6 +430,18 @@ pub const VM = struct {
         const start_reg: usize = @intCast(inst.p2);
         const num_cols: usize = @intCast(inst.p3);
 
+        if (table.schema.pk_index) |pk_idx| {
+            if (pk_idx < num_cols) {
+                const pk_reg = &self.registers[start_reg + pk_idx];
+                if (pk_reg.is_null and table.schema.columns[pk_idx].type == .Integer) {
+                    const auto_val = self.db.next_auto_increment(table.schema.table_name) catch 1;
+                    pk_reg.* = RegisterValue.init_integer(auto_val);
+                } else if (pk_reg.type == .integer) {
+                    self.db.update_auto_increment(table.schema.table_name, pk_reg.integer) catch {};
+                }
+            }
+        }
+
         try self.validate_not_null_constraints(table, start_reg, num_cols);
         try self.validate_type_constraints(table, start_reg, num_cols);
 
