@@ -42,6 +42,8 @@ fn map_column_type(parser_type: []const u8) Type {
         return .Real;
     } else if (std.mem.eql(u8, parser_type, "BLOB")) {
         return .Blob;
+    } else if (std.mem.eql(u8, parser_type, "BOOLEAN") or std.mem.eql(u8, parser_type, "BOOL")) {
+        return .Boolean;
     } else {
         return .Text;
     }

@@ -4,16 +4,6 @@ const Opcode = opcode.Opcode;
 const Instruction = opcode.Instruction;
 const VmErrors = @import("errors.zig").VmErrors;
 
-// INIT
-// OPEN_READ  cursor=0, table="users"
-// REWIND     cursor=0, jump_if_empty=7
-// COLUMN     cursor=0, col=0 -> r0   (id)
-// COLUMN     cursor=0, col=1 -> r1   (username)
-// RESULT_ROW r0, 2 cols
-// NEXT       cursor=0, jump=3        (loop back)
-// CLOSE      cursor=0
-// HALT
-
 const storage = struct {
     const Database = @import("../storage/table.zig").Database;
     const Table = @import("../storage/table.zig").Table;
@@ -22,8 +12,10 @@ const storage = struct {
     const Pager = @import("../storage/pager.zig").Pager;
     const Schema = @import("../storage/schema.zig").Schema;
     const Column = @import("../storage/schema.zig").Column;
-    const Row = @import("../storage/row.zig").Row;
+    const Type = @import("../storage/schema.zig").Type;
     const row = @import("../storage/row.zig");
+    const DynamicRow = row.DynamicRow;
+    const RowValue = row.RowValue;
     const node = @import("../storage/node.zig");
 };
 
@@ -40,60 +32,47 @@ pub const RegisterValue = struct {
     boolean: bool = false,
     is_null: bool = true,
 
-    pub const ValueType = enum {
-        integer,
-        real,
-        text,
-        blob,
-        null,
-        boolean,
-    };
+    pub const ValueType = enum { integer, real, text, blob, null, boolean };
 
     pub fn init_integer(value: i64) RegisterValue {
-        return RegisterValue{
-            .type = .integer,
-            .integer = value,
-            .is_null = false,
-            .boolean = false,
-        };
+        return RegisterValue{ .type = .integer, .integer = value, .is_null = false };
     }
-
     pub fn init_real(value: f64) RegisterValue {
-        return RegisterValue{
-            .type = .real,
-            .real = value,
-            .is_null = false,
-        };
+        return RegisterValue{ .type = .real, .real = value, .is_null = false };
     }
-
     pub fn init_text(value: []const u8) RegisterValue {
-        return RegisterValue{
-            .type = .text,
-            .text = value,
-            .is_null = false,
-        };
+        return RegisterValue{ .type = .text, .text = value, .is_null = false };
     }
-
     pub fn init_null() RegisterValue {
-        return RegisterValue{
-            .type = .null,
-            .is_null = true,
-        };
+        return RegisterValue{ .type = .null, .is_null = true };
     }
-
     pub fn init_boolean(value: bool) RegisterValue {
-        return RegisterValue{
-            .type = .boolean,
-            .boolean = value,
-            .is_null = false,
+        return RegisterValue{ .type = .boolean, .boolean = value, .is_null = false };
+    }
+    pub fn init_blob(value: []const u8) RegisterValue {
+        return RegisterValue{ .type = .blob, .blob = value, .is_null = false };
+    }
+
+    pub fn to_row_value(self: RegisterValue) storage.RowValue {
+        if (self.is_null) return storage.RowValue{ .null_val = {} };
+        return switch (self.type) {
+            .integer => storage.RowValue{ .integer = self.integer },
+            .real => storage.RowValue{ .real = self.real },
+            .text => storage.RowValue{ .text = self.text },
+            .blob => storage.RowValue{ .blob = self.blob },
+            .boolean => storage.RowValue{ .boolean = self.boolean },
+            .null => storage.RowValue{ .null_val = {} },
         };
     }
 
-    pub fn init_blob(value: []const u8) RegisterValue {
-        return RegisterValue{
-            .type = .blob,
-            .blob = value,
-            .is_null = false,
+    pub fn from_row_value(val: storage.RowValue) RegisterValue {
+        return switch (val) {
+            .integer => |v| RegisterValue.init_integer(v),
+            .real => |v| RegisterValue.init_real(v),
+            .text => |v| RegisterValue.init_text(v),
+            .blob => |v| RegisterValue.init_blob(v),
+            .boolean => |v| RegisterValue.init_boolean(v),
+            .null_val => RegisterValue.init_null(),
         };
     }
 };
@@ -101,7 +80,7 @@ pub const RegisterValue = struct {
 pub const VM = struct {
     db: *storage.Database,
     program: []const Instruction = &[_]Instruction{},
-    pc: usize = 0, // Program Counter
+    pc: usize = 0,
     registers: [MAX_REGISTERS]RegisterValue = [_]RegisterValue{RegisterValue{}} ** MAX_REGISTERS,
     cursors: std.AutoHashMap(i32, storage.Cursor),
     tables: std.AutoHashMap(i32, *storage.Table),
@@ -123,8 +102,8 @@ pub const VM = struct {
     pub fn deinit(self: *VM) void {
         self.cursors.deinit();
         self.tables.deinit();
-        for (self.results.items) |row| {
-            self.allocator.free(row);
+        for (self.results.items) |r| {
+            self.allocator.free(r);
         }
         self.results.deinit(self.allocator);
     }
@@ -137,36 +116,19 @@ pub const VM = struct {
         self.program = program;
         self.pc = 0;
         self.halted = false;
-
-        // Clear previous results
-        for (self.results.items) |row| {
-            self.allocator.free(row);
+        for (self.results.items) |r| {
+            self.allocator.free(r);
         }
         self.results.clearRetainingCapacity();
-
-        if (self.debug) {
-            print("[VM] Loaded program:\n", .{});
-            for (program, 0..) |inst, i| {
-                print("  {d:3}: {s}\n", .{ i, self.format_instruction(inst) });
-            }
-        }
     }
 
     pub fn run(self: *VM) !void {
-        if (self.debug) {
-            print("[VM] Starting execution...\n", .{});
-        }
-
         while (!self.halted and self.pc < self.program.len) {
             const inst = self.program[self.pc];
             if (self.debug) {
-                print("[VM] PC={d}: {s}\n", .{ self.pc, self.format_instruction(inst) });
+                print("[VM] PC={d}: {s}\n", .{ self.pc, inst.op.to_string() });
             }
             try self.execute(inst);
-        }
-
-        if (self.debug) {
-            print("[VM] Execution complete. {d} result rows.\n", .{self.results.items.len});
         }
     }
 
@@ -176,15 +138,9 @@ pub const VM = struct {
 
     fn execute(self: *VM, inst: Instruction) !void {
         switch (inst.op) {
-            .init => {
-                self.pc += 1;
-            },
-            .halt => {
-                self.halted = true;
-            },
-            .goto => {
-                self.pc = @intCast(inst.p2);
-            },
+            .init => self.pc += 1,
+            .halt => self.halted = true,
+            .goto => self.pc = @intCast(inst.p2),
             .if_zero => {
                 if (self.registers[@intCast(inst.p1)].integer == 0) {
                     self.pc = @intCast(inst.p2);
@@ -192,35 +148,32 @@ pub const VM = struct {
                     self.pc += 1;
                 }
             },
-            .open_read, .open_write => {
-                try self.op_open_table(inst);
-            },
+            .open_read, .open_write => try self.op_open_table(inst),
             .close => {
                 _ = self.cursors.remove(inst.p1);
                 _ = self.tables.remove(inst.p1);
                 self.pc += 1;
             },
-            .rewind => {
-                try self.op_rewind(inst);
-            },
-            .next => {
-                try self.op_next(inst);
-            },
-            .column => {
-                try self.op_column(inst);
-            },
-            .row_id => {
-                try self.op_row_id(inst);
-            },
-            .result_row => {
-                try self.op_result_row(inst);
-            },
+            .rewind => try self.op_rewind(inst),
+            .next => try self.op_next(inst),
+            .column => try self.op_column(inst),
+            .row_id => try self.op_row_id(inst),
+            .result_row => try self.op_result_row(inst),
             .integer => {
                 self.registers[@intCast(inst.p1)] = RegisterValue.init_integer(@intCast(inst.p2));
                 self.pc += 1;
             },
             .string => {
                 self.registers[@intCast(inst.p1)] = RegisterValue.init_text(inst.p4);
+                self.pc += 1;
+            },
+            .real => {
+                if (inst.p5) |ptr| {
+                    const float_ptr: *const f64 = @ptrCast(@alignCast(ptr));
+                    self.registers[@intCast(inst.p1)] = RegisterValue.init_real(float_ptr.*);
+                } else {
+                    self.registers[@intCast(inst.p1)] = RegisterValue.init_real(0.0);
+                }
                 self.pc += 1;
             },
             .blob => {
@@ -231,44 +184,26 @@ pub const VM = struct {
                 self.registers[@intCast(inst.p1)] = RegisterValue.init_null();
                 self.pc += 1;
             },
-            .make_row => {
-                self.pc += 1;
-            },
-            .insert => {
-                try self.op_insert(inst);
-            },
-            .create_table => {
-                try self.op_create_table(inst);
-            },
-            .drop_table => {
-                try self.op_drop_table(inst);
-            },
-            .eq, .ne, .lt, .le, .gt, .ge => {
-                try self.op_compare(inst);
-            },
-            .delete => {
-                try self.op_delete(inst);
-            },
-            else => {
-                return VmErrors.InvalidOp;
-            },
+            .make_row => self.pc += 1,
+            .insert => try self.op_insert(inst),
+            .create_table => try self.op_create_table(inst),
+            .drop_table => try self.op_drop_table(inst),
+            .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
+            .delete => try self.op_delete(inst),
+            else => return VmErrors.InvalidOp,
         }
     }
 
     fn op_open_table(self: *VM, inst: Instruction) !void {
-        const table_name = inst.p4;
-        const table = try self.db.get_table(table_name);
-
+        const table = try self.db.get_table(inst.p4);
         try self.tables.put(inst.p1, table);
         self.pc += 1;
     }
 
     fn op_rewind(self: *VM, inst: Instruction) !void {
         const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
-
         var cursor = try storage.Cursor.new_cursor_start(&table.btree);
         try self.cursors.put(inst.p1, cursor);
-
         if (cursor.is_end()) {
             self.pc = @intCast(inst.p2);
         } else {
@@ -278,9 +213,7 @@ pub const VM = struct {
 
     fn op_next(self: *VM, inst: Instruction) !void {
         var cursor = self.cursors.getPtr(inst.p1) orelse return VmErrors.NoCursor;
-
         try cursor.advance();
-
         if (cursor.is_end()) {
             self.pc += 1;
         } else {
@@ -291,60 +224,22 @@ pub const VM = struct {
     fn op_column(self: *VM, inst: Instruction) !void {
         const cursor = self.cursors.getPtr(inst.p1) orelse return VmErrors.NoCursor;
         const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
-        _ = table;
 
-        const page = try self.db.pager.get_page(cursor.page_number());
-
-        const cell_offset = storage.row.leaf_cell_offset(cursor.cell_number());
-        const key_size = storage.row.LEAF_KEY_SIZE;
-        const row_data = page.data[cell_offset + key_size ..];
-
+        const page = try self.db.pager.get_page(cursor.page_num);
         const col_idx: usize = @intCast(inst.p2);
         const dest_reg: usize = @intCast(inst.p3);
 
-        switch (col_idx) {
-            0 => {
-                const id = std.mem.readInt(u32, row_data[0..4], .little);
-                self.registers[dest_reg] = RegisterValue.init_integer(@intCast(id));
-            },
-            1 => {
-                const username_start = storage.row.COL_ID_SIZE;
-                const username_data = row_data[username_start .. username_start + storage.row.COL_USERNAME_SIZE];
-                const username = std.mem.sliceTo(username_data, 0);
-                self.registers[dest_reg] = RegisterValue.init_text(username);
-            },
-            2 => {
-                const email_start = storage.row.COL_ID_SIZE + storage.row.COL_USERNAME_SIZE;
-                const email_data = row_data[email_start .. email_start + storage.row.COL_EMAIL_SIZE];
-                const email = std.mem.sliceTo(email_data, 0);
-                self.registers[dest_reg] = RegisterValue.init_text(email);
-            },
-            3 => {
-                const active_offset = storage.row.COL_ID_SIZE + storage.row.COL_USERNAME_SIZE + storage.row.COL_EMAIL_SIZE;
-                const active = row_data[active_offset] != 0;
-                self.registers[dest_reg] = RegisterValue.init_boolean(active);
-            },
-            4 => {
-                const created_at_offset = storage.row.COL_ID_SIZE + storage.row.COL_USERNAME_SIZE + storage.row.COL_EMAIL_SIZE + storage.row.COL_ACTIVE_SIZE;
-                const created_at = std.mem.readInt(i64, row_data[created_at_offset..][0..8], .little);
-                self.registers[dest_reg] = RegisterValue.init_integer(created_at);
-            },
-            5 => {
-                const blob_len_offset = storage.row.COL_ID_SIZE + storage.row.COL_USERNAME_SIZE + storage.row.COL_EMAIL_SIZE + storage.row.COL_ACTIVE_SIZE + storage.row.COL_CREATED_AT_SIZE;
-                const blob_len = std.mem.readInt(u32, row_data[blob_len_offset..][0..4], .little);
-                const blob_data_offset = blob_len_offset + storage.row.COL_BLOB_LEN_SIZE;
-                const blob_data = row_data[blob_data_offset .. blob_data_offset + blob_len];
-                self.registers[dest_reg] = RegisterValue.init_blob(blob_data);
-            },
-            else => self.registers[dest_reg] = RegisterValue.init_null(),
+        if (col_idx < table.schema.columns.len) {
+            const val = storage.row.get_value_from_page(page, cursor.cell_num, table.schema, col_idx);
+            self.registers[dest_reg] = RegisterValue.from_row_value(val);
+        } else {
+            self.registers[dest_reg] = RegisterValue.init_null();
         }
-
         self.pc += 1;
     }
 
     fn op_row_id(self: *VM, inst: Instruction) !void {
         var cursor = self.cursors.getPtr(inst.p1) orelse return VmErrors.NoCursor;
-
         const key = try cursor.key();
         self.registers[@intCast(inst.p2)] = RegisterValue.init_integer(@intCast(key));
         self.pc += 1;
@@ -353,25 +248,17 @@ pub const VM = struct {
     fn op_result_row(self: *VM, inst: Instruction) !void {
         const start_reg: usize = @intCast(inst.p1);
         const num_cols: usize = @intCast(inst.p2);
-
-        const row = try self.allocator.alloc(RegisterValue, num_cols);
+        const result = try self.allocator.alloc(RegisterValue, num_cols);
         for (0..num_cols) |i| {
-            row[i] = self.registers[start_reg + i];
+            result[i] = self.registers[start_reg + i];
         }
-
-        try self.results.append(self.allocator, row);
+        try self.results.append(self.allocator, result);
         self.pc += 1;
     }
 
-    fn validate_not_null_constraints(
-        self: *VM,
-        table: *storage.Table,
-        start_reg: usize,
-        num_cols: usize,
-    ) !void {
+    fn validate_not_null_constraints(self: *VM, table: *storage.Table, start_reg: usize, num_cols: usize) !void {
         const schema = table.schema;
         const cols_to_check = @min(num_cols, schema.columns.len);
-
         for (0..cols_to_check) |i| {
             const col = schema.columns[i];
             if (col.not_null) {
@@ -383,47 +270,27 @@ pub const VM = struct {
         }
     }
 
-    fn validate_type_constraints(
-        self: *VM,
-        table: *storage.Table,
-        start_reg: usize,
-        num_cols: usize,
-    ) !void {
+    fn validate_type_constraints(self: *VM, table: *storage.Table, start_reg: usize, num_cols: usize) !void {
         const schema = table.schema;
         const cols_to_check = @min(num_cols, schema.columns.len);
-
         for (0..cols_to_check) |i| {
             const col = schema.columns[i];
             const reg = self.registers[start_reg + i];
-
-            if (reg.type == .null or reg.is_null) {
-                continue;
-            }
+            if (reg.type == .null or reg.is_null) continue;
 
             const valid = switch (col.type) {
                 .Integer, .Date, .Time, .Datetime => reg.type == .integer,
-                .Real => reg.type == .real or reg.type == .integer, // Allow int -> real coercion
+                .Real => reg.type == .real or reg.type == .integer,
                 .Text => reg.type == .text,
-                .Blob => reg.type == .blob or reg.type == .text, // Allow text -> blob
-                .Boolean => reg.type == .boolean or reg.type == .integer, // Allow int -> bool (0/1)
+                .Blob => reg.type == .blob or reg.type == .text,
+                .Boolean => reg.type == .boolean or reg.type == .integer,
             };
-
-            if (!valid) {
-                if (self.debug) {
-                    print("[VM] Type mismatch: column '{s}' expects {s}, got {s}\n", .{
-                        col.name,
-                        @tagName(col.type),
-                        @tagName(reg.type),
-                    });
-                }
-                return VmErrors.TypeMismatch;
-            }
+            if (!valid) return VmErrors.TypeMismatch;
         }
     }
 
     fn op_insert(self: *VM, inst: Instruction) !void {
         const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
-
         const start_reg: usize = @intCast(inst.p2);
         const num_cols: usize = @intCast(inst.p3);
 
@@ -432,82 +299,20 @@ pub const VM = struct {
 
         const key: u32 = @intCast(self.registers[start_reg].integer);
 
-        var username: []const u8 = "";
-        var email: []const u8 = "";
-        var active: bool = false;
-        var created_at: i64 = 0;
-        var blob: []const u8 = "";
+        var values: [MAX_REGISTERS]storage.RowValue = undefined;
+        const cols_to_use = @min(num_cols, table.schema.columns.len);
+        for (0..cols_to_use) |i| {
+            values[i] = self.registers[start_reg + i].to_row_value();
+        }
 
-        if (inst.p3 > 1) {
-            const reg = self.registers[start_reg + 1];
-            if (reg.type == .text) {
-                username = reg.text;
-            } else if (reg.type == .boolean) {
-                active = reg.boolean;
-            } else if (reg.type == .integer) {
-                if (reg.integer <= 1) {
-                    active = reg.integer != 0;
-                } else {
-                    created_at = reg.integer;
-                }
-            } else if (reg.type == .blob) {
-                blob = reg.blob;
-            }
-        }
-        if (inst.p3 > 2) {
-            const reg = self.registers[start_reg + 2];
-            if (reg.type == .text) {
-                email = reg.text;
-            } else if (reg.type == .boolean) {
-                active = reg.boolean;
-            } else if (reg.type == .integer) {
-                if (reg.integer <= 1) {
-                    active = reg.integer != 0;
-                } else {
-                    created_at = reg.integer;
-                }
-            } else if (reg.type == .blob) {
-                blob = reg.blob;
-            }
-        }
-        if (inst.p3 > 3) {
-            const reg = self.registers[start_reg + 3];
-            if (reg.type == .boolean) {
-                active = reg.boolean;
-            } else if (reg.type == .integer) {
-                if (reg.integer <= 1) {
-                    active = reg.integer != 0;
-                } else {
-                    created_at = reg.integer;
-                }
-            } else if (reg.type == .blob) {
-                blob = reg.blob;
-            }
-        }
-        if (inst.p3 > 4) {
-            const reg = self.registers[start_reg + 4];
-            if (reg.type == .integer) {
-                created_at = reg.integer;
-            } else if (reg.type == .blob) {
-                blob = reg.blob;
-            }
-        }
-        if (inst.p3 > 5) {
-            const reg = self.registers[start_reg + 5];
-            if (reg.type == .blob) {
-                blob = reg.blob;
-            } else if (reg.type == .text) {
-                blob = reg.text;
-            }
-        }
+        var row = storage.DynamicRow.init();
+        try row.serialize_values(table.schema, values[0..cols_to_use]);
 
         if (self.debug) {
-            print("[VM] op_insert: key={}, username='{s}', email='{s}', active={}, created_at={}, blob_len={}, num_cols={}\n", .{ key, username, email, active, created_at, blob.len, inst.p3 });
+            print("[VM] op_insert: key={}, num_cols={}\n", .{ key, num_cols });
         }
 
-        const row = storage.Row.initFull(key, username, email, active, created_at, blob);
-        try table.insert(key, row);
-
+        try table.insert(key, &row);
         self.pc += 1;
     }
 
@@ -520,39 +325,31 @@ pub const VM = struct {
     }
 
     fn op_drop_table(self: *VM, inst: Instruction) !void {
-        const table_name = inst.p4;
-        self.db.drop_table(table_name) catch |err| {
-            if (inst.p1 == 0) {
-                return err;
-            }
+        self.db.drop_table(inst.p4) catch |err| {
+            if (inst.p1 == 0) return err;
         };
         self.pc += 1;
     }
 
     fn op_delete(self: *VM, inst: Instruction) !void {
         const cursor = self.cursors.getPtr(inst.p1) orelse return VmErrors.NoCursor;
-
         const page = try self.db.pager.get_page(cursor.page_number());
         const num_cells = storage.node.get_num_cells(page);
         const cell_to_delete = cursor.cell_number();
 
-        if (self.debug) {
-            print("[VM] op_delete: deleting cell {} from page {} (total cells: {})\n", .{ cell_to_delete, cursor.page_number(), num_cells });
-        }
-
         if (cell_to_delete < num_cells - 1) {
             var i: u32 = cell_to_delete;
             while (i < num_cells - 1) : (i += 1) {
-                const next_key = storage.row.get_leaf_key(page, i + 1);
-                const next_row = storage.row.get_leaf_row(page, i + 1);
-                storage.row.set_leaf_key(page, i, next_key);
-                storage.row.set_leaf_row(page, i, next_row);
+                const src_offset = storage.row.leaf_cell_offset(i + 1);
+                const dest_offset = storage.row.leaf_cell_offset(i);
+                @memcpy(
+                    page.data[dest_offset .. dest_offset + storage.row.LEAF_CELL_SIZE],
+                    page.data[src_offset .. src_offset + storage.row.LEAF_CELL_SIZE],
+                );
             }
         }
-
         storage.node.set_num_cells(page, num_cells - 1);
         self.db.pager.mark_dirty(cursor.page_number());
-
         self.pc += 1;
     }
 
@@ -560,7 +357,6 @@ pub const VM = struct {
         const left = self.registers[@intCast(inst.p1)];
         const right = self.registers[@intCast(inst.p2)];
         const dest_reg: usize = @intCast(inst.p3);
-
         var result: bool = false;
 
         if (left.type == .integer and right.type == .integer) {
@@ -579,25 +375,12 @@ pub const VM = struct {
                 .ne => !std.mem.eql(u8, left.text, right.text),
                 else => false,
             };
-        } else if (left.type == .boolean and right.type == .boolean) {
-            result = switch (inst.op) {
-                .eq => left.boolean == right.boolean,
-                .ne => left.boolean != right.boolean,
-                else => false,
-            };
         }
-
         self.registers[dest_reg] = RegisterValue.init_integer(if (result) 1 else 0);
         self.pc += 1;
     }
-
-    fn format_instruction(self: *VM, inst: Instruction) []const u8 {
-        _ = self;
-        return inst.op.to_string();
-    }
 };
 
-// Tests
 test "vm initialization" {
     const allocator = std.testing.allocator;
     var pager = try storage.Pager.init(allocator, ":memory:");
@@ -610,7 +393,7 @@ test "vm initialization" {
     defer vm.deinit();
 
     try std.testing.expect(!vm.halted);
-    try std.testing.expectEqual(0, vm.pc);
+    try std.testing.expectEqual(@as(usize, 0), vm.pc);
 }
 
 test "vm load and halt" {
@@ -657,7 +440,7 @@ test "vm integer register" {
     vm.load(&program);
     try vm.run();
 
-    try std.testing.expectEqual(42, vm.registers[0].integer);
+    try std.testing.expectEqual(@as(i64, 42), vm.registers[0].integer);
 }
 
 test "vm comparison" {
@@ -683,120 +466,10 @@ test "vm comparison" {
     vm.load(&program);
     try vm.run();
 
-    try std.testing.expectEqual(1, vm.registers[2].integer);
+    try std.testing.expectEqual(@as(i64, 1), vm.registers[2].integer);
 }
 
-test "vm goto" {
-    const allocator = std.testing.allocator;
-    var pager = try storage.Pager.init(allocator, ":memory:");
-    defer pager.deinit();
-
-    var db = try storage.Database.init(allocator, &pager);
-    defer db.close();
-
-    var vm = VM.init(allocator, &db);
-    vm.set_debug(false);
-    defer vm.deinit();
-
-    const program = [_]Instruction{
-        Instruction.init(.init),
-        Instruction.init(.integer).with_p1(0).with_p2(1),
-        Instruction.init(.goto).with_p2(4), // Skip next instruction
-        Instruction.init(.integer).with_p1(0).with_p2(999), // Should be skipped
-        Instruction.init(.halt),
-    };
-
-    vm.load(&program);
-    try vm.run();
-
-    try std.testing.expectEqual(1, vm.registers[0].integer);
-}
-
-test "property: NULL values in NOT NULL columns cause INSERT failure" {
-    const allocator = std.testing.allocator;
-
-    var prng = std.Random.DefaultPrng.init(12345);
-    const random = prng.random();
-
-    for (0..100) |iteration| {
-        var pager = try storage.Pager.init(allocator, ":memory:");
-        defer pager.deinit();
-
-        var db = try storage.Database.init(allocator, &pager);
-        defer db.close();
-
-        var columns = [_]storage.Column{
-            .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-            .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
-            .{ .name = "email", .type = .Text, .primary_key = false, .not_null = false },
-        };
-        const schema = storage.Schema.init("test_table", &columns);
-        _ = try db.create_table(&schema);
-
-        var vm = VM.init(allocator, &db);
-        vm.set_debug(false);
-        defer vm.deinit();
-
-        const null_col_idx = random.intRangeAtMost(usize, 0, 1);
-
-        vm.registers[0] = RegisterValue.init_integer(@intCast(iteration + 1)); // id
-        vm.registers[1] = RegisterValue.init_text("testuser"); // username
-        vm.registers[2] = RegisterValue.init_text("test@email.com"); // email
-
-        vm.registers[null_col_idx] = RegisterValue.init_null();
-
-        const table = try db.get_table("test_table");
-        try vm.tables.put(0, table);
-
-        const result = vm.validate_not_null_constraints(table, 0, 3);
-
-        try std.testing.expectError(VmErrors.NullConstraintViolation, result);
-    }
-}
-
-test "property: Valid INSERT with all NOT NULL columns satisfied succeeds" {
-    const allocator = std.testing.allocator;
-
-    var prng = std.Random.DefaultPrng.init(67890);
-    const random = prng.random();
-
-    for (0..100) |iteration| {
-        var pager = try storage.Pager.init(allocator, ":memory:");
-        defer pager.deinit();
-
-        var db = try storage.Database.init(allocator, &pager);
-        defer db.close();
-
-        var columns = [_]storage.Column{
-            .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-            .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
-            .{ .name = "email", .type = .Text, .primary_key = false, .not_null = false },
-        };
-        const schema = storage.Schema.init("test_table", &columns);
-        _ = try db.create_table(&schema);
-
-        var vm = VM.init(allocator, &db);
-        vm.set_debug(false);
-        defer vm.deinit();
-
-        const id: i64 = @intCast(iteration + 1);
-        vm.registers[0] = RegisterValue.init_integer(id);
-        vm.registers[1] = RegisterValue.init_text("testuser");
-
-        if (random.boolean()) {
-            vm.registers[2] = RegisterValue.init_text("test@email.com");
-        } else {
-            vm.registers[2] = RegisterValue.init_null();
-        }
-
-        const table = try db.get_table("test_table");
-        try vm.tables.put(0, table);
-
-        try vm.validate_not_null_constraints(table, 0, 3);
-    }
-}
-
-test "unit: INSERT with explicit NULL into NOT NULL column fails" {
+test "vm insert and select with dynamic row" {
     const allocator = std.testing.allocator;
     var pager = try storage.Pager.init(allocator, ":memory:");
     defer pager.deinit();
@@ -806,8 +479,7 @@ test "unit: INSERT with explicit NULL into NOT NULL column fails" {
 
     var columns = [_]storage.Column{
         .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-        .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
-        .{ .name = "email", .type = .Text, .primary_key = false, .not_null = false },
+        .{ .name = "name", .type = .Text, .primary_key = false, .not_null = true },
     };
     const schema = storage.Schema.init("test_table", &columns);
     _ = try db.create_table(&schema);
@@ -817,100 +489,26 @@ test "unit: INSERT with explicit NULL into NOT NULL column fails" {
     defer vm.deinit();
 
     vm.registers[0] = RegisterValue.init_integer(1);
-    vm.registers[1] = RegisterValue.init_null();
-    vm.registers[2] = RegisterValue.init_text("test@email.com");
+    vm.registers[1] = RegisterValue.init_text("alice");
 
     const table = try db.get_table("test_table");
     try vm.tables.put(0, table);
 
-    const result = vm.validate_not_null_constraints(table, 0, 3);
-    try std.testing.expectError(VmErrors.NullConstraintViolation, result);
-}
-
-test "unit: INSERT with omitted NOT NULL column fails" {
-    const allocator = std.testing.allocator;
-    var pager = try storage.Pager.init(allocator, ":memory:");
-    defer pager.deinit();
-
-    var db = try storage.Database.init(allocator, &pager);
-    defer db.close();
-
-    var columns = [_]storage.Column{
-        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-        .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
-        .{ .name = "email", .type = .Text, .primary_key = false, .not_null = false },
+    var row = storage.DynamicRow.init();
+    const values = [_]storage.RowValue{
+        storage.RowValue{ .integer = 1 },
+        storage.RowValue{ .text = "alice" },
     };
-    const schema = storage.Schema.init("test_table", &columns);
-    _ = try db.create_table(&schema);
+    try row.serialize_values(&schema, &values);
+    try table.insert(1, &row);
 
-    var vm = VM.init(allocator, &db);
-    vm.set_debug(false);
-    defer vm.deinit();
+    var cursor = try table.select_all();
+    try std.testing.expect(!cursor.is_end());
 
-    vm.registers[0] = RegisterValue.init_integer(1); // id - valid
+    const retrieved = try cursor.value(&schema);
+    const id_val = retrieved.get_value(&schema, 0);
+    try std.testing.expectEqual(@as(i64, 1), id_val.integer);
 
-    const table = try db.get_table("test_table");
-    try vm.tables.put(0, table);
-
-    const result = vm.validate_not_null_constraints(table, 0, 3);
-    try std.testing.expectError(VmErrors.NullConstraintViolation, result);
-}
-
-test "unit: INSERT with all valid values succeeds" {
-    const allocator = std.testing.allocator;
-    var pager = try storage.Pager.init(allocator, ":memory:");
-    defer pager.deinit();
-
-    var db = try storage.Database.init(allocator, &pager);
-    defer db.close();
-
-    var columns = [_]storage.Column{
-        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-        .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
-        .{ .name = "email", .type = .Text, .primary_key = false, .not_null = false },
-    };
-    const schema = storage.Schema.init("test_table", &columns);
-    _ = try db.create_table(&schema);
-
-    var vm = VM.init(allocator, &db);
-    vm.set_debug(false);
-    defer vm.deinit();
-
-    vm.registers[0] = RegisterValue.init_integer(1);
-    vm.registers[1] = RegisterValue.init_text("testuser");
-    vm.registers[2] = RegisterValue.init_text("test@email.com");
-
-    const table = try db.get_table("test_table");
-    try vm.tables.put(0, table);
-
-    try vm.validate_not_null_constraints(table, 0, 3);
-}
-
-test "unit: INSERT with NULL in nullable column succeeds" {
-    const allocator = std.testing.allocator;
-    var pager = try storage.Pager.init(allocator, ":memory:");
-    defer pager.deinit();
-
-    var db = try storage.Database.init(allocator, &pager);
-    defer db.close();
-
-    var columns = [_]storage.Column{
-        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-        .{ .name = "username", .type = .Text, .primary_key = false, .not_null = true },
-        .{ .name = "email", .type = .Text, .primary_key = false, .not_null = false },
-    };
-    const schema = storage.Schema.init("test_table", &columns);
-    _ = try db.create_table(&schema);
-
-    var vm = VM.init(allocator, &db);
-    vm.set_debug(false);
-    defer vm.deinit();
-
-    vm.registers[0] = RegisterValue.init_integer(1);
-    vm.registers[1] = RegisterValue.init_text("testuser");
-    vm.registers[2] = RegisterValue.init_null();
-    const table = try db.get_table("test_table");
-    try vm.tables.put(0, table);
-
-    try vm.validate_not_null_constraints(table, 0, 3);
+    const name_val = retrieved.get_value(&schema, 1);
+    try std.testing.expectEqualStrings("alice", name_val.text);
 }

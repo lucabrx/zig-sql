@@ -5,15 +5,13 @@ const btree_mod = @import("btree.zig");
 const Btree = btree_mod.Btree;
 const pager_mod = @import("pager.zig");
 const Pager = pager_mod.Pager;
-const Page = pager_mod.Page;
 const row_mod = @import("row.zig");
-const Row = row_mod.Row;
+const DynamicRow = row_mod.DynamicRow;
 const Cursor = @import("cursor.zig").Cursor;
 const StorageError = @import("errors.zig").StorageError;
 
 const print = std.debug.print;
 
-// Table represents a database table
 pub const Table = struct {
     schema: *const Schema,
     root_page: u32,
@@ -21,11 +19,13 @@ pub const Table = struct {
     pager: *Pager,
 
     pub fn init(pager: *Pager, s: *const Schema, root_page: u32) Table {
+        var btree = Btree.init(pager, root_page);
+        btree.set_schema(s);
         return Table{
             .schema = s,
             .root_page = root_page,
             .pager = pager,
-            .btree = Btree.init(pager, root_page),
+            .btree = btree,
         };
     }
 
@@ -33,7 +33,7 @@ pub const Table = struct {
         try self.btree.initialize();
     }
 
-    pub fn insert(self: *Table, key: u32, r: Row) !void {
+    pub fn insert(self: *Table, key: u32, r: *const DynamicRow) !void {
         try self.btree.insert(key, r);
     }
 
@@ -71,7 +71,7 @@ pub const Database = struct {
         var db = Database{
             .pager = pager,
             .tables = std.StringHashMap(*Table).init(allocator),
-            .next_page = 1, // Page 0 reserved for metadata
+            .next_page = 1,
             .allocator = allocator,
         };
 
@@ -86,32 +86,20 @@ pub const Database = struct {
 
     fn init_metadata(self: *Database) !void {
         const page = try self.pager.get_page(0);
-
-        // Magic number "ZSQL"
         @memcpy(page.data[0..4], MAGIC);
-
-        // Version
         std.mem.writeInt(u32, page.data[4..8], VERSION, .little);
-
-        // Number of tables
         std.mem.writeInt(u32, page.data[8..12], 0, .little);
-
-        // Next available page
         std.mem.writeInt(u32, page.data[12..16], 1, .little);
-
         self.pager.mark_dirty(0);
         print("[DB] Initialized metadata page\n", .{});
     }
 
     fn load_metadata(self: *Database) !void {
         const page = try self.pager.get_page(0);
-
         if (!std.mem.eql(u8, page.data[0..4], MAGIC)) {
             return StorageError.InvalidDatabaseFile;
         }
-
         self.next_page = std.mem.readInt(u32, page.data[12..16], .little);
-
         print("[DB] Loaded metadata, next page: {}\n", .{self.next_page});
     }
 
@@ -132,7 +120,6 @@ pub const Database = struct {
         try table_ptr.initialize();
 
         try self.tables.put(owned_name, table_ptr);
-
         try self.save_metadata();
 
         print("[DB] Created table '{s}' at page {}\n", .{ owned_name, root_page });
@@ -161,16 +148,13 @@ pub const Database = struct {
 
     fn save_metadata(self: *Database) !void {
         const page = try self.pager.get_page(0);
-
         std.mem.writeInt(u32, page.data[12..16], self.next_page, .little);
         std.mem.writeInt(u32, page.data[8..12], @intCast(self.tables.count()), .little);
-
         self.pager.mark_dirty(0);
     }
 
     pub fn close(self: *Database) void {
         self.save_metadata() catch {};
-
         var iter = self.tables.iterator();
         while (iter.next()) |entry| {
             self.allocator.destroy(entry.value_ptr.*);
@@ -188,65 +172,14 @@ test "table initialization" {
     var pager = try Pager.init(std.testing.allocator, ":memory:");
     defer pager.deinit();
 
-    const columns = [_]schema_mod.Column{
+    var columns = [_]schema_mod.Column{
         .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
     };
-    const cols_slice: []schema_mod.Column = @constCast(&columns);
-    const s = Schema.init("test", cols_slice);
+    const s = Schema.init("test", &columns);
 
     var table = Table.init(&pager, &s, 0);
     try table.initialize();
 
-    try std.testing.expectEqual(0, table.root_page);
+    try std.testing.expectEqual(@as(u32, 0), table.root_page);
     try std.testing.expectEqualStrings("test", table.schema.table_name);
-}
-
-test "table insert and search" {
-    var pager = try Pager.init(std.testing.allocator, ":memory:");
-    defer pager.deinit();
-
-    const columns = [_]schema_mod.Column{
-        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-    };
-    const cols_slice: []schema_mod.Column = @constCast(&columns);
-    const s = Schema.init("test", cols_slice);
-
-    var table = Table.init(&pager, &s, 0);
-    try table.initialize();
-
-    const r = Row.init(1, "alice", "alice@test.com");
-    try table.insert(1, r);
-
-    var cursor = try table.search(1);
-    const retrieved = try cursor.value();
-    try std.testing.expectEqual(1, retrieved.id);
-}
-
-test "table select all" {
-    var pager = try Pager.init(std.testing.allocator, ":memory:");
-    defer pager.deinit();
-
-    const columns = [_]schema_mod.Column{
-        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
-    };
-    const cols_slice: []schema_mod.Column = @constCast(&columns);
-    const s = Schema.init("test", cols_slice);
-
-    var table = Table.init(&pager, &s, 0);
-    try table.initialize();
-
-    const r1 = Row.init(1, "alice", "alice@test.com");
-    const r2 = Row.init(2, "bob", "bob@test.com");
-    try table.insert(1, r1);
-    try table.insert(2, r2);
-
-    var cursor = try table.select_all();
-    try std.testing.expect(!cursor.is_end());
-
-    var count: u32 = 0;
-    while (!cursor.is_end()) {
-        count += 1;
-        try cursor.advance();
-    }
-    try std.testing.expectEqual(2, count);
 }

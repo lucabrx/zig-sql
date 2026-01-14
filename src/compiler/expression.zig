@@ -17,8 +17,10 @@ pub fn compile_expression(c: *Compiler, expr: Expression, dest_reg: i32, schema:
         .integer_literal => |int_lit| {
             _ = try c.emit(.integer, dest_reg, @intCast(int_lit.value), 0, "", null);
         },
-        .float_literal => |_| {
-            _ = try c.emit(.real, dest_reg, 0, 0, "", null);
+        .float_literal => |float_lit| {
+            const float_ptr = c.allocator.create(f64) catch return CompileError.OutOfMemory;
+            float_ptr.* = float_lit.value;
+            _ = try c.emit(.real, dest_reg, 0, 0, "", @ptrCast(float_ptr));
         },
         .string_literal => |str_lit| {
             _ = try c.emit(.string, dest_reg, 0, 0, str_lit.value, null);

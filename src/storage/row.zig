@@ -1,120 +1,168 @@
 const std = @import("std");
 const Page = @import("pager.zig").Page;
 const node = @import("node.zig");
-
-pub const COL_ID_SIZE: usize = 4;
-pub const COL_USERNAME_SIZE: usize = 32;
-pub const COL_EMAIL_SIZE: usize = 255;
-pub const COL_ACTIVE_SIZE: usize = 1;
-pub const COL_CREATED_AT_SIZE: usize = 8;
-pub const COL_BLOB_LEN_SIZE: usize = 4;
-pub const COL_BLOB_DATA_SIZE: usize = 512;
-pub const COL_BLOB_SIZE: usize = COL_BLOB_LEN_SIZE + COL_BLOB_DATA_SIZE;
-pub const ROW_SIZE: usize = COL_ID_SIZE + COL_USERNAME_SIZE + COL_EMAIL_SIZE + COL_ACTIVE_SIZE + COL_CREATED_AT_SIZE + COL_BLOB_SIZE;
+const schema_mod = @import("schema.zig");
+const Schema = schema_mod.Schema;
+const Type = schema_mod.Type;
 
 pub const PAGE_SIZE = @import("pager.zig").PAGE_SIZE;
 
-pub const Row = struct {
-    id: u32,
-    username: [COL_USERNAME_SIZE]u8,
-    email: [COL_EMAIL_SIZE]u8,
-    active: bool,
-    created_at: i64,
-    blob_len: u32,
-    blob_data: [COL_BLOB_DATA_SIZE]u8,
+pub const MAX_ROW_SIZE: usize = 1024;
+pub const TEXT_MAX_SIZE: usize = 256;
+pub const BLOB_MAX_SIZE: usize = 512;
 
-    pub fn init(id: u32, username: []const u8, email: []const u8) Row {
-        return Row.initFull(id, username, email, false, 0, "");
-    }
+pub const LEAF_KEY_SIZE: usize = 4;
+pub const LEAF_VALUE_SIZE: usize = MAX_ROW_SIZE;
+pub const LEAF_CELL_SIZE: usize = LEAF_KEY_SIZE + LEAF_VALUE_SIZE;
 
-    pub fn initWithActive(id: u32, username: []const u8, email: []const u8, active: bool) Row {
-        return Row.initFull(id, username, email, active, 0, "");
-    }
+const print = std.debug.print;
 
-    pub fn initFull(id: u32, username: []const u8, email: []const u8, active: bool, created_at: i64, blob: []const u8) Row {
-        var r = Row{
-            .id = id,
-            .username = std.mem.zeroes([COL_USERNAME_SIZE]u8),
-            .email = std.mem.zeroes([COL_EMAIL_SIZE]u8),
-            .active = active,
-            .created_at = created_at,
-            .blob_len = 0,
-            .blob_data = std.mem.zeroes([COL_BLOB_DATA_SIZE]u8),
-        };
+pub const RowValue = union(enum) {
+    integer: i64,
+    real: f64,
+    text: []const u8,
+    blob: []const u8,
+    boolean: bool,
+    null_val: void,
 
-        const u_len = @min(username.len, COL_USERNAME_SIZE);
-        @memcpy(r.username[0..u_len], username[0..u_len]);
-
-        const e_len = @min(email.len, COL_EMAIL_SIZE);
-        @memcpy(r.email[0..e_len], email[0..e_len]);
-
-        const b_len = @min(blob.len, COL_BLOB_DATA_SIZE);
-        r.blob_len = @intCast(b_len);
-        @memcpy(r.blob_data[0..b_len], blob[0..b_len]);
-
-        return r;
-    }
-
-    pub fn serialize(self: *const Row) [ROW_SIZE]u8 {
-        var buf: [ROW_SIZE]u8 = undefined;
-
-        std.mem.writeInt(u32, buf[0..4], self.id, .little);
-
-        @memcpy(buf[COL_ID_SIZE .. COL_ID_SIZE + COL_USERNAME_SIZE], &self.username);
-
-        const email_offset = COL_ID_SIZE + COL_USERNAME_SIZE;
-        @memcpy(buf[email_offset .. email_offset + COL_EMAIL_SIZE], &self.email);
-
-        const active_offset = email_offset + COL_EMAIL_SIZE;
-        buf[active_offset] = if (self.active) 1 else 0;
-
-        const created_at_offset = active_offset + COL_ACTIVE_SIZE;
-        std.mem.writeInt(i64, buf[created_at_offset..][0..8], self.created_at, .little);
-
-        const blob_len_offset = created_at_offset + COL_CREATED_AT_SIZE;
-        std.mem.writeInt(u32, buf[blob_len_offset..][0..4], self.blob_len, .little);
-
-        const blob_data_offset = blob_len_offset + COL_BLOB_LEN_SIZE;
-        @memcpy(buf[blob_data_offset .. blob_data_offset + COL_BLOB_DATA_SIZE], &self.blob_data);
-
-        return buf;
+    pub fn is_null(self: RowValue) bool {
+        return self == .null_val;
     }
 };
 
-pub fn deserialize_row(data: []const u8) Row {
-    var row: Row = undefined;
+pub const DynamicRow = struct {
+    data: [MAX_ROW_SIZE]u8,
+    size: usize,
 
-    row.id = std.mem.readInt(u32, data[0..4], .little);
+    pub fn init() DynamicRow {
+        return DynamicRow{
+            .data = std.mem.zeroes([MAX_ROW_SIZE]u8),
+            .size = 0,
+        };
+    }
 
-    @memcpy(&row.username, data[COL_ID_SIZE .. COL_ID_SIZE + COL_USERNAME_SIZE]);
+    pub fn serialize_values(self: *DynamicRow, schema: *const Schema, values: []const RowValue) !void {
+        var offset: usize = 0;
+        for (schema.columns, 0..) |col, i| {
+            const val = if (i < values.len) values[i] else RowValue{ .null_val = {} };
+            self.data[offset] = if (val.is_null()) 1 else 0;
+            offset += 1;
 
-    const email_offset = COL_ID_SIZE + COL_USERNAME_SIZE;
-    @memcpy(&row.email, data[email_offset .. email_offset + COL_EMAIL_SIZE]);
+            if (!val.is_null()) {
+                switch (col.type) {
+                    .Integer, .Date, .Time, .Datetime => {
+                        const int_val = switch (val) {
+                            .integer => |v| v,
+                            else => 0,
+                        };
+                        std.mem.writeInt(i64, self.data[offset..][0..8], int_val, .little);
+                        offset += 8;
+                    },
+                    .Real => {
+                        const real_val = switch (val) {
+                            .real => |v| v,
+                            .integer => |v| @as(f64, @floatFromInt(v)),
+                            else => 0.0,
+                        };
+                        @memcpy(self.data[offset..][0..8], std.mem.asBytes(&real_val));
+                        offset += 8;
+                    },
+                    .Text => {
+                        const text_val = switch (val) {
+                            .text => |v| v,
+                            else => "",
+                        };
+                        const len: u32 = @intCast(@min(text_val.len, TEXT_MAX_SIZE));
+                        std.mem.writeInt(u32, self.data[offset..][0..4], len, .little);
+                        offset += 4;
+                        if (len > 0) @memcpy(self.data[offset .. offset + len], text_val[0..len]);
+                        offset += TEXT_MAX_SIZE;
+                    },
+                    .Blob => {
+                        const blob_val = switch (val) {
+                            .blob => |v| v,
+                            .text => |v| v,
+                            else => "",
+                        };
+                        const len: u32 = @intCast(@min(blob_val.len, BLOB_MAX_SIZE));
+                        std.mem.writeInt(u32, self.data[offset..][0..4], len, .little);
+                        offset += 4;
+                        if (len > 0) @memcpy(self.data[offset .. offset + len], blob_val[0..len]);
+                        offset += BLOB_MAX_SIZE;
+                    },
+                    .Boolean => {
+                        const bool_val = switch (val) {
+                            .boolean => |v| v,
+                            .integer => |v| v != 0,
+                            else => false,
+                        };
+                        self.data[offset] = if (bool_val) 1 else 0;
+                        offset += 1;
+                    },
+                }
+            } else {
+                offset += column_storage_size(col.type);
+            }
+        }
+        self.size = offset;
+    }
 
-    const active_offset = email_offset + COL_EMAIL_SIZE;
-    row.active = data[active_offset] != 0;
+    pub fn get_value(self: *const DynamicRow, schema: *const Schema, col_index: usize) RowValue {
+        var offset: usize = 0;
+        for (schema.columns[0..col_index]) |col| {
+            offset += 1 + column_storage_size(col.type);
+        }
+        const col = schema.columns[col_index];
+        const is_null_flag = self.data[offset] != 0;
+        offset += 1;
 
-    const created_at_offset = active_offset + COL_ACTIVE_SIZE;
-    row.created_at = std.mem.readInt(i64, data[created_at_offset..][0..8], .little);
+        if (is_null_flag) return RowValue{ .null_val = {} };
 
-    const blob_len_offset = created_at_offset + COL_CREATED_AT_SIZE;
-    row.blob_len = std.mem.readInt(u32, data[blob_len_offset..][0..4], .little);
+        return switch (col.type) {
+            .Integer, .Date, .Time, .Datetime => RowValue{ .integer = std.mem.readInt(i64, self.data[offset..][0..8], .little) },
+            .Real => RowValue{ .real = @bitCast(self.data[offset..][0..8].*) },
+            .Text => blk: {
+                const len = std.mem.readInt(u32, self.data[offset..][0..4], .little);
+                break :blk RowValue{ .text = self.data[offset + 4 .. offset + 4 + len] };
+            },
+            .Blob => blk: {
+                const len = std.mem.readInt(u32, self.data[offset..][0..4], .little);
+                break :blk RowValue{ .blob = self.data[offset + 4 .. offset + 4 + len] };
+            },
+            .Boolean => RowValue{ .boolean = self.data[offset] != 0 },
+        };
+    }
 
-    const blob_data_offset = blob_len_offset + COL_BLOB_LEN_SIZE;
-    @memcpy(&row.blob_data, data[blob_data_offset .. blob_data_offset + COL_BLOB_DATA_SIZE]);
+    pub fn as_bytes(self: *const DynamicRow) []const u8 {
+        return self.data[0..self.size];
+    }
+};
 
+pub fn column_storage_size(col_type: Type) usize {
+    return switch (col_type) {
+        .Integer, .Date, .Time, .Datetime => 8,
+        .Real => 8,
+        .Text => 4 + TEXT_MAX_SIZE,
+        .Blob => 4 + BLOB_MAX_SIZE,
+        .Boolean => 1,
+    };
+}
+
+pub fn calculate_row_size(schema: *const Schema) usize {
+    var size: usize = 0;
+    for (schema.columns) |col| {
+        size += 1 + column_storage_size(col.type);
+    }
+    return size;
+}
+
+pub fn deserialize_dynamic_row(data: []const u8, schema: *const Schema) DynamicRow {
+    var row = DynamicRow.init();
+    const size = calculate_row_size(schema);
+    @memcpy(row.data[0..size], data[0..size]);
+    row.size = size;
     return row;
 }
-
-pub fn print_row(r: Row) void {
-    const user = std.mem.sliceTo(&r.username, 0);
-    const mail = std.mem.sliceTo(&r.email, 0);
-    std.debug.print("Row(id={}, user={s}, email={s})\n", .{ r.id, user, mail });
-}
-
-pub const LEAF_KEY_SIZE: usize = 4;
-pub const LEAF_VALUE_SIZE: usize = ROW_SIZE;
-pub const LEAF_CELL_SIZE: usize = LEAF_KEY_SIZE + LEAF_VALUE_SIZE;
 
 pub fn max_leaf_cells() u32 {
     const available = PAGE_SIZE - node.LEAF_HEADER_SIZE;
@@ -142,70 +190,93 @@ pub fn get_leaf_value(page: *Page, cell_num: u32) []u8 {
 
 pub fn set_leaf_value(page: *Page, cell_num: u32, value: []const u8) void {
     const offset = leaf_cell_offset(cell_num) + LEAF_KEY_SIZE;
-    @memcpy(page.data[offset .. offset + LEAF_VALUE_SIZE], value);
+    const len = @min(value.len, LEAF_VALUE_SIZE);
+    @memcpy(page.data[offset .. offset + len], value[0..len]);
 }
 
-pub fn get_leaf_row(page: *Page, cell_num: u32) Row {
+pub fn get_leaf_row(page: *Page, cell_num: u32, schema: *const Schema) DynamicRow {
     const val_data = get_leaf_value(page, cell_num);
-    return deserialize_row(val_data);
+    return deserialize_dynamic_row(val_data, schema);
 }
 
-pub fn set_leaf_row(page: *Page, cell_num: u32, r: Row) void {
-    const bytes = r.serialize();
-    set_leaf_value(page, cell_num, &bytes);
+pub fn get_value_from_page(page: *Page, cell_num: u32, schema: *const Schema, col_index: usize) RowValue {
+    const val_data = get_leaf_value(page, cell_num);
+    var offset: usize = 0;
+
+    for (schema.columns[0..col_index]) |col| {
+        offset += 1 + column_storage_size(col.type);
+    }
+
+    const col = schema.columns[col_index];
+    const is_null_flag = val_data[offset] != 0;
+    offset += 1;
+
+    if (is_null_flag) return RowValue{ .null_val = {} };
+
+    return switch (col.type) {
+        .Integer, .Date, .Time, .Datetime => RowValue{ .integer = std.mem.readInt(i64, val_data[offset..][0..8], .little) },
+        .Real => RowValue{ .real = @bitCast(val_data[offset..][0..8].*) },
+        .Text => blk: {
+            const len = std.mem.readInt(u32, val_data[offset..][0..4], .little);
+            break :blk RowValue{ .text = val_data[offset + 4 .. offset + 4 + len] };
+        },
+        .Blob => blk: {
+            const len = std.mem.readInt(u32, val_data[offset..][0..4], .little);
+            break :blk RowValue{ .blob = val_data[offset + 4 .. offset + 4 + len] };
+        },
+        .Boolean => RowValue{ .boolean = val_data[offset] != 0 },
+    };
 }
 
-const print = std.debug.print;
-
-pub fn debug_print_row(r: Row) void {
-    const user = std.mem.sliceTo(&r.username, 0);
-    const mail = std.mem.sliceTo(&r.email, 0);
-    print("[ROW] id={}, username={s}, email={s}\n", .{ r.id, user, mail });
+pub fn set_leaf_row(page: *Page, cell_num: u32, row: *const DynamicRow) void {
+    set_leaf_value(page, cell_num, row.as_bytes());
 }
 
-test "row creation and field values" {
-    const row = Row.init(1, "alice", "alice@example.com");
-    debug_print_row(row);
+test "dynamic row serialize and deserialize" {
+    var columns = [_]schema_mod.Column{
+        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
+        .{ .name = "name", .type = .Text, .primary_key = false, .not_null = true },
+        .{ .name = "active", .type = .Boolean, .primary_key = false, .not_null = false },
+    };
+    const schema = Schema.init("test", &columns);
 
-    try std.testing.expectEqual(1, row.id);
+    var row = DynamicRow.init();
+    const values = [_]RowValue{
+        RowValue{ .integer = 42 },
+        RowValue{ .text = "alice" },
+        RowValue{ .boolean = true },
+    };
+    try row.serialize_values(&schema, &values);
 
-    const username = std.mem.sliceTo(&row.username, 0);
-    try std.testing.expectEqualStrings("alice", username);
+    const id_val = row.get_value(&schema, 0);
+    try std.testing.expectEqual(@as(i64, 42), id_val.integer);
 
-    const email = std.mem.sliceTo(&row.email, 0);
-    try std.testing.expectEqualStrings("alice@example.com", email);
+    const name_val = row.get_value(&schema, 1);
+    try std.testing.expectEqualStrings("alice", name_val.text);
+
+    const active_val = row.get_value(&schema, 2);
+    try std.testing.expect(active_val.boolean);
 }
 
-test "row serialization and deserialization" {
-    const original = Row.init(42, "bob", "bob@test.com");
-    debug_print_row(original);
-    const serialized = original.serialize();
-    const deserialized = deserialize_row(&serialized);
-    debug_print_row(deserialized);
+test "dynamic row with null values" {
+    var columns = [_]schema_mod.Column{
+        .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
+        .{ .name = "email", .type = .Text, .primary_key = false, .not_null = false },
+    };
+    const schema = Schema.init("test", &columns);
 
-    try std.testing.expectEqual(original.id, deserialized.id);
+    var row = DynamicRow.init();
+    const values = [_]RowValue{
+        RowValue{ .integer = 1 },
+        RowValue{ .null_val = {} },
+    };
+    try row.serialize_values(&schema, &values);
 
-    const orig_user = std.mem.sliceTo(&original.username, 0);
-    const deser_user = std.mem.sliceTo(&deserialized.username, 0);
-    try std.testing.expectEqualStrings(orig_user, deser_user);
+    const id_val = row.get_value(&schema, 0);
+    try std.testing.expectEqual(@as(i64, 1), id_val.integer);
 
-    const orig_email = std.mem.sliceTo(&original.email, 0);
-    const deser_email = std.mem.sliceTo(&deserialized.email, 0);
-    try std.testing.expectEqualStrings(orig_email, deser_email);
-}
-
-test "row size constants" {
-    try std.testing.expectEqual(4, COL_ID_SIZE);
-    try std.testing.expectEqual(32, COL_USERNAME_SIZE);
-    try std.testing.expectEqual(255, COL_EMAIL_SIZE);
-    try std.testing.expectEqual(816, ROW_SIZE);
-}
-
-test "max leaf cells calculation" {
-    const max_cells = max_leaf_cells();
-    // PAGE_SIZE = 4096, LEAF_HEADER_SIZE = 14, LEAF_CELL_SIZE = 4 + 816 = 820
-    // (4096 - 14) / 820 = 4
-    try std.testing.expectEqual(4, max_cells);
+    const email_val = row.get_value(&schema, 1);
+    try std.testing.expect(email_val.is_null());
 }
 
 test "leaf cell key operations" {
@@ -213,29 +284,8 @@ test "leaf cell key operations" {
     node.initialize_leaf_node(&page);
 
     set_leaf_key(&page, 0, 100);
-    try std.testing.expectEqual(100, get_leaf_key(&page, 0));
+    try std.testing.expectEqual(@as(u32, 100), get_leaf_key(&page, 0));
 
     set_leaf_key(&page, 1, 200);
-    try std.testing.expectEqual(200, get_leaf_key(&page, 1));
-}
-
-test "leaf row storage and retrieval" {
-    var page = Page.init();
-    node.initialize_leaf_node(&page);
-
-    const original_row = Row.init(123, "testuser", "test@email.com");
-    debug_print_row(original_row);
-    set_leaf_row(&page, 0, original_row);
-    set_leaf_key(&page, 0, 123);
-
-    const retrieved_row = get_leaf_row(&page, 0);
-    debug_print_row(retrieved_row);
-    const retrieved_key = get_leaf_key(&page, 0);
-
-    try std.testing.expectEqual(123, retrieved_key);
-    try std.testing.expectEqual(original_row.id, retrieved_row.id);
-
-    const orig_user = std.mem.sliceTo(&original_row.username, 0);
-    const retr_user = std.mem.sliceTo(&retrieved_row.username, 0);
-    try std.testing.expectEqualStrings(orig_user, retr_user);
+    try std.testing.expectEqual(@as(u32, 200), get_leaf_key(&page, 1));
 }
