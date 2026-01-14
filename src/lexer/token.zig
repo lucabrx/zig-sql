@@ -103,6 +103,7 @@ pub const TokenType = enum {
     then,
     @"else",
     end,
+    as,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -204,6 +205,7 @@ pub const TokenType = enum {
             .then => "THEN",
             .@"else" => "ELSE",
             .end => "END",
+            .as => "AS",
         };
     }
 };
@@ -292,6 +294,7 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "THEN", .then },
     .{ "ELSE", .@"else" },
     .{ "END", .end },
+    .{ "AS", .as },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

@@ -346,13 +346,21 @@ pub const REPL = struct {
                 try self.writer.print("SELECT Statement\n", .{});
                 try self.writer.writeAll("Columns:\n");
                 for (select_stmt.columns) |col| {
-                    switch (col) {
-                        .star_expression => try self.writer.writeAll("  - *\n"),
-                        .identifier => |ident| try self.writer.print("  - {s}\n", .{ident.name}),
-                        else => try self.writer.writeAll("  - <expression>\n"),
+                    switch (col.expr) {
+                        .star_expression => try self.writer.writeAll("  - *"),
+                        .identifier => |ident| try self.writer.print("  - {s}", .{ident.name}),
+                        else => try self.writer.writeAll("  - <expression>"),
                     }
+                    if (col.alias) |alias| {
+                        try self.writer.print(" AS {s}", .{alias});
+                    }
+                    try self.writer.writeAll("\n");
                 }
-                try self.writer.print("From Table: {s}\n", .{select_stmt.from});
+                try self.writer.print("From Table: {s}", .{select_stmt.from.name});
+                if (select_stmt.from.alias) |alias| {
+                    try self.writer.print(" AS {s}", .{alias});
+                }
+                try self.writer.writeAll("\n");
                 if (select_stmt.joins.len > 0) {
                     try self.writer.writeAll("Joins:\n");
                     for (select_stmt.joins) |join| {
@@ -362,7 +370,11 @@ pub const REPL = struct {
                             .right => "RIGHT",
                             .cross => "CROSS",
                         };
-                        try self.writer.print("  - {s} JOIN {s}\n", .{ join_type_str, join.table });
+                        try self.writer.print("  - {s} JOIN {s}", .{ join_type_str, join.table.name });
+                        if (join.table.alias) |alias| {
+                            try self.writer.print(" AS {s}", .{alias});
+                        }
+                        try self.writer.writeAll("\n");
                     }
                 }
             },

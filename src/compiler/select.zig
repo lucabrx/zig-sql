@@ -32,15 +32,15 @@ pub fn compile_select(c: *Compiler, stmt: SelectStatement) !void {
     }
 }
 
-fn has_aggregates(cols: []const Expression) bool {
+fn has_aggregates(cols: []const ast.SelectColumn) bool {
     for (cols) |col| {
-        if (col == .aggregate) return true;
+        if (col.expr == .aggregate) return true;
     }
     return false;
 }
 
 fn compile_grouped_select(c: *Compiler, stmt: SelectStatement) !void {
-    const table = c.db.get_table(stmt.from) catch return CompilerError.TableNotFound;
+    const table = c.db.get_table(stmt.from.name) catch return CompilerError.TableNotFound;
     const schema = table.schema;
 
     const agg_info = try analyze_aggregates(c, stmt.columns, schema);
@@ -48,7 +48,7 @@ fn compile_grouped_select(c: *Compiler, stmt: SelectStatement) !void {
 
     _ = try c.emit(.agg_init, @intCast(agg_info.agg_cols.len), @intCast(stmt.group_by.len), 0, "", null);
 
-    _ = try c.emit(.open_read, 0, 0, 0, stmt.from, null);
+    _ = try c.emit(.open_read, 0, 0, 0, stmt.from.name, null);
     const rewind_addr = try c.emit(.rewind, 0, 0, 0, "", null);
     const loop_start = c.current_addr();
 
@@ -105,11 +105,11 @@ const AggAnalysis = struct {
     agg_cols: []AggColInfo,
 };
 
-fn analyze_aggregates(c: *Compiler, cols: []const Expression, schema: *const Schema) !AggAnalysis {
+fn analyze_aggregates(c: *Compiler, cols: []const ast.SelectColumn, schema: *const Schema) !AggAnalysis {
     var agg_cols = std.ArrayList(AggColInfo){};
 
     for (cols) |col| {
-        switch (col) {
+        switch (col.expr) {
             .aggregate => |agg| {
                 var arg_idx: ?i32 = null;
                 if (agg.arg) |arg| {
@@ -135,14 +135,14 @@ fn analyze_aggregates(c: *Compiler, cols: []const Expression, schema: *const Sch
 }
 
 fn compile_simple_select(c: *Compiler, stmt: SelectStatement) !void {
-    const table = c.db.get_table(stmt.from) catch return CompilerError.TableNotFound;
+    const table = c.db.get_table(stmt.from.name) catch return CompilerError.TableNotFound;
     const schema = table.schema;
 
     const output_cols = try resolve_select_columns(c, stmt.columns, schema);
     defer c.allocator.free(output_cols);
 
     const index_candidate = if (stmt.where) |where_expr|
-        try find_usable_index(c, where_expr, stmt.from, schema)
+        try find_usable_index(c, where_expr, stmt.from.name, schema)
     else
         null;
 
@@ -157,17 +157,17 @@ fn compile_join_select(c: *Compiler, stmt: SelectStatement) !void {
     var tables = std.ArrayList(TableInfo){};
     defer tables.deinit(c.allocator);
 
-    const main_table = c.db.get_table(stmt.from) catch return CompilerError.TableNotFound;
+    const main_table = c.db.get_table(stmt.from.name) catch return CompilerError.TableNotFound;
     try tables.append(c.allocator, .{
-        .name = stmt.from,
+        .name = if (stmt.from.alias) |a| a else stmt.from.name,
         .schema = main_table.schema,
         .cursor_id = 0,
     });
 
     for (stmt.joins, 1..) |join, i| {
-        const join_table = c.db.get_table(join.table) catch return CompilerError.TableNotFound;
+        const join_table = c.db.get_table(join.table.name) catch return CompilerError.TableNotFound;
         try tables.append(c.allocator, .{
-            .name = join.table,
+            .name = if (join.table.alias) |a| a else join.table.name,
             .schema = join_table.schema,
             .cursor_id = @intCast(i),
         });
@@ -176,8 +176,9 @@ fn compile_join_select(c: *Compiler, stmt: SelectStatement) !void {
     const output_cols = try resolve_join_columns(c, stmt.columns, tables.items);
     defer c.allocator.free(output_cols);
 
-    for (tables.items) |tbl| {
-        _ = try c.emit(.open_read, tbl.cursor_id, 0, 0, tbl.name, null);
+    for (tables.items, 0..) |tbl, idx| {
+        const actual_name = if (idx == 0) stmt.from.name else stmt.joins[idx - 1].table.name;
+        _ = try c.emit(.open_read, tbl.cursor_id, 0, 0, actual_name, null);
     }
 
     var rewind_addrs = std.ArrayList(usize){};
@@ -247,11 +248,11 @@ const JoinColInfo = struct {
     col_idx: i32,
 };
 
-fn resolve_join_columns(c: *Compiler, cols: []const Expression, tables: []const TableInfo) ![]JoinColInfo {
+fn resolve_join_columns(c: *Compiler, cols: []const ast.SelectColumn, tables: []const TableInfo) ![]JoinColInfo {
     var result = std.ArrayList(JoinColInfo){};
 
     for (cols) |col| {
-        switch (col) {
+        switch (col.expr) {
             .star_expression => {
                 for (tables) |tbl| {
                     for (0..tbl.schema.columns.len) |col_idx| {
@@ -377,7 +378,7 @@ const ColInfo = union(enum) {
 };
 
 fn compile_full_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema, output_cols: []ColInfo) !void {
-    _ = try c.emit(.open_read, 0, 0, 0, stmt.from, null);
+    _ = try c.emit(.open_read, 0, 0, 0, stmt.from.name, null);
 
     const rewind_addr = try c.emit(.rewind, 0, 0, 0, "", null);
 
@@ -421,7 +422,7 @@ fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema
     const value_reg = c.alloc_reg();
     try expression.compile_expression(c, candidate.value, value_reg, schema);
 
-    _ = try c.emit(.open_read, 0, 0, 0, stmt.from, null);
+    _ = try c.emit(.open_read, 0, 0, 0, stmt.from.name, null);
     const scan_addr = try c.emit(.index_scan, 0, 0, value_reg, candidate.index_name, null);
 
     const loop_start = c.current_addr();
@@ -509,11 +510,11 @@ fn find_index_for_column(c: *Compiler, table_name: []const u8, column_name: []co
     return null;
 }
 
-fn resolve_select_columns(c: *Compiler, cols: []const Expression, schema: *const Schema) ![]ColInfo {
+fn resolve_select_columns(c: *Compiler, cols: []const ast.SelectColumn, schema: *const Schema) ![]ColInfo {
     var result = std.ArrayList(ColInfo){};
 
     for (cols) |col| {
-        switch (col) {
+        switch (col.expr) {
             .star_expression => {
                 for (0..schema.columns.len) |i| {
                     try result.append(c.allocator, .{ .column_idx = @intCast(i) });
@@ -526,7 +527,7 @@ fn resolve_select_columns(c: *Compiler, cols: []const Expression, schema: *const
                 }
             },
             else => {
-                try result.append(c.allocator, .{ .expression = col });
+                try result.append(c.allocator, .{ .expression = col.expr });
             },
         }
     }

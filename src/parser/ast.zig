@@ -31,6 +31,16 @@ pub const CaseExpression = struct {
     else_result: ?Expression,
 };
 
+pub const SelectColumn = struct {
+    expr: Expression,
+    alias: ?[]const u8,
+};
+
+pub const TableRef = struct {
+    name: []const u8,
+    alias: ?[]const u8,
+};
+
 pub const BetweenExpression = struct {
     expr: Expression,
     low: Expression,
@@ -105,8 +115,8 @@ pub const Node = union(enum) {
 
 pub const SelectStatement = struct {
     distinct: bool,
-    columns: []const Expression,
-    from: []const u8,
+    columns: []const SelectColumn,
+    from: TableRef,
     joins: []const JoinClause,
     where: ?Expression,
     group_by: []const []const u8,
@@ -125,7 +135,7 @@ pub const JoinType = enum {
 
 pub const JoinClause = struct {
     join_type: JoinType,
-    table: []const u8,
+    table: TableRef,
     condition: ?Expression,
 };
 
@@ -257,14 +267,14 @@ test "usage example" {
         .right = Expression{ .integer_literal = .{ .value = 5 } },
     };
 
-    var columns = try std.ArrayList(Expression).initCapacity(allocator, 1);
-    columns.appendAssumeCapacity(Expression{ .star_expression = .{} });
+    var columns = try std.ArrayList(SelectColumn).initCapacity(allocator, 1);
+    columns.appendAssumeCapacity(SelectColumn{ .expr = Expression{ .star_expression = .{} }, .alias = null });
 
     const stmt = Statement{
         .select_stmt = SelectStatement{
             .distinct = false,
             .columns = columns.items,
-            .from = "users",
+            .from = TableRef{ .name = "users", .alias = null },
             .joins = &[_]JoinClause{},
             .where = Expression{ .binary_expression = bin_expr },
             .group_by = &[_][]const u8{},
@@ -277,7 +287,7 @@ test "usage example" {
 
     switch (stmt) {
         .select_stmt => |s| {
-            std.debug.print("Selecting from table: {s}\n", .{s.from});
+            std.debug.print("Selecting from table: {s}\n", .{s.from.name});
             if (s.limit) |l| {
                 std.debug.print("Limit is: {d}\n", .{l});
             }
