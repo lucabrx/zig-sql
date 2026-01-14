@@ -86,7 +86,14 @@ fn compile_grouped_select(c: *Compiler, stmt: SelectStatement) !void {
     _ = try c.emit(.close, 0, 0, 0, "", null);
     c.patch(rewind_addr, @intCast(close_addr));
 
-    _ = try c.emit(.agg_final, 0, @intCast(stmt.group_by.len), if (stmt.distinct) 1 else 0, "", null);
+    var having_ptr: ?*anyopaque = null;
+    if (stmt.having) |having_expr| {
+        const having_copy = c.allocator.create(Expression) catch return CompilerError.OutOfMemory;
+        having_copy.* = having_expr;
+        having_ptr = @ptrCast(having_copy);
+    }
+
+    _ = try c.emit(.agg_final, 0, @intCast(stmt.group_by.len), if (stmt.distinct) 1 else 0, "", having_ptr);
 }
 
 const AggColInfo = struct {

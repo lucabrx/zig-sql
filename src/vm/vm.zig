@@ -752,6 +752,10 @@ pub const VM = struct {
 
     fn op_agg_final(self: *VM, inst: Instruction) !void {
         const num_group_cols: usize = @intCast(inst.p2);
+        const having_expr: ?*const @import("../parser/ast.zig").Expression = if (inst.p5) |ptr|
+            @ptrCast(@alignCast(ptr))
+        else
+            null;
 
         var iter = self.agg_groups.iterator();
         while (iter.next()) |entry| {
@@ -790,6 +794,14 @@ pub const VM = struct {
                 }
             }
 
+            if (having_expr) |expr| {
+                const passes = self.eval_having(expr.*, result, states);
+                if (!passes) {
+                    self.allocator.free(result);
+                    continue;
+                }
+            }
+
             try self.results.append(self.allocator, result);
         }
 
@@ -802,6 +814,88 @@ pub const VM = struct {
         }
 
         self.pc += 1;
+    }
+
+    fn eval_having(self: *VM, expr: @import("../parser/ast.zig").Expression, result: []RegisterValue, states: []AggState) bool {
+        switch (expr) {
+            .binary_expression => |bin| {
+                const left_val = self.eval_having_value(bin.left, result, states);
+                const right_val = self.eval_having_value(bin.right, result, states);
+
+                if (std.mem.eql(u8, bin.operator, ">")) {
+                    return left_val > right_val;
+                } else if (std.mem.eql(u8, bin.operator, ">=")) {
+                    return left_val >= right_val;
+                } else if (std.mem.eql(u8, bin.operator, "<")) {
+                    return left_val < right_val;
+                } else if (std.mem.eql(u8, bin.operator, "<=")) {
+                    return left_val <= right_val;
+                } else if (std.mem.eql(u8, bin.operator, "=") or std.mem.eql(u8, bin.operator, "==")) {
+                    return left_val == right_val;
+                } else if (std.mem.eql(u8, bin.operator, "!=") or std.mem.eql(u8, bin.operator, "<>")) {
+                    return left_val != right_val;
+                } else if (std.mem.eql(u8, bin.operator, "AND")) {
+                    return left_val != 0 and right_val != 0;
+                } else if (std.mem.eql(u8, bin.operator, "OR")) {
+                    return left_val != 0 or right_val != 0;
+                }
+                return true;
+            },
+            .aggregate => |agg| {
+                for (states) |state| {
+                    if (state.func.len > 0) {
+                        const func_match = switch (agg.function) {
+                            .count => std.mem.eql(u8, state.func, "count"),
+                            .sum => std.mem.eql(u8, state.func, "sum"),
+                            .avg => std.mem.eql(u8, state.func, "avg"),
+                            .min => std.mem.eql(u8, state.func, "min"),
+                            .max => std.mem.eql(u8, state.func, "max"),
+                        };
+                        if (func_match) {
+                            return state.count > 0;
+                        }
+                    }
+                }
+                return true;
+            },
+            else => return true,
+        }
+    }
+
+    fn eval_having_value(self: *VM, expr: @import("../parser/ast.zig").Expression, result: []RegisterValue, states: []AggState) i64 {
+        _ = self;
+        _ = result;
+        const ast = @import("../parser/ast.zig");
+        _ = ast; // autofix
+        switch (expr) {
+            .integer_literal => |lit| return lit.value,
+            .aggregate => |agg| {
+                for (states) |state| {
+                    const func_match = switch (agg.function) {
+                        .count => std.mem.eql(u8, state.func, "count"),
+                        .sum => std.mem.eql(u8, state.func, "sum"),
+                        .avg => std.mem.eql(u8, state.func, "avg"),
+                        .min => std.mem.eql(u8, state.func, "min"),
+                        .max => std.mem.eql(u8, state.func, "max"),
+                    };
+                    if (func_match) {
+                        if (std.mem.eql(u8, state.func, "count")) {
+                            return state.count;
+                        } else if (std.mem.eql(u8, state.func, "sum")) {
+                            return @intFromFloat(state.sum);
+                        } else if (std.mem.eql(u8, state.func, "avg") and state.count > 0) {
+                            return @intFromFloat(state.sum / @as(f64, @floatFromInt(state.count)));
+                        } else if (std.mem.eql(u8, state.func, "min")) {
+                            if (state.min) |m| return m.integer;
+                        } else if (std.mem.eql(u8, state.func, "max")) {
+                            if (state.max) |m| return m.integer;
+                        }
+                    }
+                }
+                return 0;
+            },
+            else => return 0,
+        }
     }
 };
 

@@ -21,6 +21,7 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
         .joins = &[_]ast.JoinClause{},
         .where = null,
         .group_by = &[_][]const u8{},
+        .having = null,
         .order_by = &[_]ast.OrderBy{},
         .limit = null,
         .offset = null,
@@ -50,6 +51,11 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
             return error.ExpectedBy;
         }
         stmt.group_by = try parse_group_by(self);
+    }
+
+    if (self.current.type == token.TokenType.having) {
+        self.advance();
+        stmt.having = try self.parse_or_expression();
     }
 
     if (self.current.type == token.TokenType.order) {
