@@ -135,6 +135,9 @@ pub const Parser = struct {
             },
             token.TokenType.select => {
                 const stmt = try select.parse_select(self);
+                if (self.current.type == token.TokenType.@"union") {
+                    return try select.parse_union(self, stmt);
+                }
                 return ast.Statement{
                     .select_stmt = stmt,
                 };

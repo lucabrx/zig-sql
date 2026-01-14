@@ -359,11 +359,14 @@ pub const REPL = struct {
                     }
                     try self.writer.writeAll("\n");
                 }
-                try self.writer.print("From Table: {s}", .{select_stmt.from.name});
-                if (select_stmt.from.alias) |alias| {
-                    try self.writer.print(" AS {s}", .{alias});
+                try self.writer.writeAll("From Tables:\n");
+                for (select_stmt.from) |from_table| {
+                    try self.writer.print("  - {s}", .{from_table.name});
+                    if (from_table.alias) |alias| {
+                        try self.writer.print(" AS {s}", .{alias});
+                    }
+                    try self.writer.writeAll("\n");
                 }
-                try self.writer.writeAll("\n");
                 if (select_stmt.joins.len > 0) {
                     try self.writer.writeAll("Joins:\n");
                     for (select_stmt.joins) |join| {
@@ -446,6 +449,9 @@ pub const REPL = struct {
                     .serializable => "SERIALIZABLE",
                 };
                 try self.writer.print("SET TRANSACTION ISOLATION LEVEL {s}\n", .{level_str});
+            },
+            .union_stmt => |union_stmt| {
+                try self.writer.print("UNION{s}\n", .{if (union_stmt.all) " ALL" else ""});
             },
         }
     }

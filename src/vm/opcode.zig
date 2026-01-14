@@ -86,6 +86,8 @@ pub const Opcode = enum(u8) {
     case_expr,
     sort_results,
     limit_results,
+    union_start,
+    union_merge,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -149,6 +151,8 @@ pub const Opcode = enum(u8) {
             .case_expr => "CASE",
             .sort_results => "SORT_RESULTS",
             .limit_results => "LIMIT_RESULTS",
+            .union_start => "UNION_START",
+            .union_merge => "UNION_MERGE",
         };
     }
 };

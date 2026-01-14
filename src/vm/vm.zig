@@ -289,6 +289,8 @@ pub const VM = struct {
             .case_expr => try self.op_case(inst),
             .sort_results => self.op_sort_results(inst),
             .limit_results => self.op_limit_results(inst),
+            .union_start => self.op_union_start(inst),
+            .union_merge => self.op_union_merge(inst),
             else => return VmErrors.InvalidOp,
         }
     }
@@ -934,6 +936,53 @@ pub const VM = struct {
         }
 
         self.pc += 1;
+    }
+
+    fn op_union_start(self: *VM, inst: Instruction) void {
+        _ = inst;
+        self.seen_rows.clearRetainingCapacity();
+        self.pc += 1;
+    }
+
+    fn op_union_merge(self: *VM, inst: Instruction) void {
+        const is_all = inst.p1 != 0;
+
+        if (!is_all) {
+            var i: usize = 0;
+            while (i < self.results.items.len) {
+                const row = self.results.items[i];
+                const row_hash = self.hash_result_row(row);
+                const gop = self.seen_rows.getOrPut(row_hash) catch {
+                    i += 1;
+                    continue;
+                };
+                if (gop.found_existing) {
+                    self.allocator.free(row);
+                    _ = self.results.orderedRemove(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        self.pc += 1;
+    }
+
+    fn hash_result_row(self: *VM, row: []RegisterValue) u64 {
+        _ = self;
+        var hasher = std.hash.Wyhash.init(0);
+        for (row) |val| {
+            hasher.update(std.mem.asBytes(&val.type));
+            switch (val.type) {
+                .integer => hasher.update(std.mem.asBytes(&val.integer)),
+                .real => hasher.update(std.mem.asBytes(&val.real)),
+                .text => hasher.update(val.text),
+                .blob => hasher.update(val.blob),
+                .boolean => hasher.update(std.mem.asBytes(&val.boolean)),
+                .null => hasher.update(&[_]u8{0}),
+            }
+        }
+        return hasher.final();
     }
 
     fn eval_const_expr(self: *VM, expr: @import("../parser/ast.zig").Expression) RegisterValue {

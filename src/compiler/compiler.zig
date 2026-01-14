@@ -67,6 +67,7 @@ pub const Compiler = struct {
                 };
                 _ = try self.emit(.txn_set_isolation, level, 0, 0, "", null);
             },
+            .union_stmt => |s| try select.compile_union(self, s),
         }
 
         _ = try self.emit(.halt, 0, 0, 0, "", null);

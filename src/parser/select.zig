@@ -17,7 +17,7 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
     stmt.* = ast.SelectStatement{
         .distinct = is_distinct,
         .columns = try parse_select_columns(self),
-        .from = ast.TableRef{ .name = "", .alias = null },
+        .from = &[_]ast.TableRef{},
         .joins = &[_]ast.JoinClause{},
         .where = null,
         .group_by = &[_][]const u8{},
@@ -31,35 +31,7 @@ pub fn parse_select(self: *Parser) ParseError!ast.SelectStatement {
         return error.ExpectedFrom;
     }
 
-    if (self.current.type != token.TokenType.ident) {
-        self.addError("Expected table name, got '{s}'", .{@tagName(self.current.type)});
-        return error.ExpectedIdentifier;
-    }
-    stmt.from.name = self.current.literal;
-    self.advance();
-
-    if (self.current.type == token.TokenType.as) {
-        self.advance();
-        if (self.current.type != token.TokenType.ident) {
-            self.addError("Expected alias name after AS", .{});
-            return error.ExpectedIdentifier;
-        }
-        stmt.from.alias = self.current.literal;
-        self.advance();
-    } else if (self.current.type == token.TokenType.ident and
-        self.current.type != token.TokenType.where and
-        self.current.type != token.TokenType.join and
-        self.current.type != token.TokenType.inner and
-        self.current.type != token.TokenType.left and
-        self.current.type != token.TokenType.right and
-        self.current.type != token.TokenType.cross and
-        self.current.type != token.TokenType.order and
-        self.current.type != token.TokenType.group and
-        self.current.type != token.TokenType.limit)
-    {
-        stmt.from.alias = self.current.literal;
-        self.advance();
-    }
+    stmt.from = try parse_from_tables(self);
 
     stmt.joins = try parse_joins(self);
 
@@ -212,6 +184,60 @@ fn parse_joins(self: *Parser) ParseError![]ast.JoinClause {
     return joins.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
 }
 
+fn parse_from_tables(self: *Parser) ParseError![]ast.TableRef {
+    var tables = std.ArrayList(ast.TableRef){};
+    defer tables.deinit(self.allocator);
+
+    while (true) {
+        if (self.current.type != token.TokenType.ident) {
+            self.addError("Expected table name, got '{s}'", .{@tagName(self.current.type)});
+            return error.ExpectedIdentifier;
+        }
+
+        var table_ref = ast.TableRef{ .name = self.current.literal, .alias = null };
+        self.advance();
+
+        if (self.current.type == token.TokenType.as) {
+            self.advance();
+            if (self.current.type != token.TokenType.ident) {
+                self.addError("Expected alias name after AS", .{});
+                return error.ExpectedIdentifier;
+            }
+            table_ref.alias = self.current.literal;
+            self.advance();
+        } else if (self.current.type == token.TokenType.ident and
+            !is_keyword(self.current.type))
+        {
+            table_ref.alias = self.current.literal;
+            self.advance();
+        }
+
+        try tables.append(self.allocator, table_ref);
+
+        if (self.current.type == token.TokenType.comma) {
+            self.advance();
+        } else {
+            break;
+        }
+    }
+
+    return tables.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
+}
+
+fn is_keyword(t: token.TokenType) bool {
+    return t == token.TokenType.where or
+        t == token.TokenType.join or
+        t == token.TokenType.inner or
+        t == token.TokenType.left or
+        t == token.TokenType.right or
+        t == token.TokenType.cross or
+        t == token.TokenType.order or
+        t == token.TokenType.group or
+        t == token.TokenType.limit or
+        t == token.TokenType.having or
+        t == token.TokenType.on;
+}
+
 fn parse_select_columns(self: *Parser) ParseError![]ast.SelectColumn {
     var columns = std.ArrayList(ast.SelectColumn){};
     defer columns.deinit(self.allocator);
@@ -303,6 +329,40 @@ fn parse_order_by(self: *Parser) ParseError![]ast.OrderBy {
 
 const lexer = @import("../lexer/lexer.zig");
 
+pub fn parse_union(self: *Parser, left: ast.SelectStatement) ParseError!ast.Statement {
+    self.advance();
+
+    var is_all = false;
+    if (self.current.type == token.TokenType.all) {
+        is_all = true;
+        self.advance();
+    }
+
+    if (self.current.type != token.TokenType.select) {
+        self.addError("Expected SELECT after UNION", .{});
+        return error.UnexpectedToken;
+    }
+
+    const right_select = try parse_select(self);
+
+    const right_ptr = self.allocator.create(ast.UnionOrSelect) catch return error.OutOfMemory;
+
+    if (self.current.type == token.TokenType.@"union") {
+        const nested = try parse_union(self, right_select);
+        right_ptr.* = ast.UnionOrSelect{ .union_stmt = nested.union_stmt };
+    } else {
+        right_ptr.* = ast.UnionOrSelect{ .select = right_select };
+    }
+
+    return ast.Statement{
+        .union_stmt = ast.UnionStatement{
+            .left = left,
+            .right = right_ptr,
+            .all = is_all,
+        },
+    };
+}
+
 test "parse select statement" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -316,7 +376,8 @@ test "parse select statement" {
         var p = Parser.init(tokens, allocator);
         const stmt = try parse_select(&p);
 
-        try std.testing.expectEqualStrings("users", stmt.from.name);
+        try std.testing.expectEqual(1, stmt.from.len);
+        try std.testing.expectEqualStrings("users", stmt.from[0].name);
         try std.testing.expectEqual(1, stmt.columns.len);
     }
 
@@ -328,7 +389,8 @@ test "parse select statement" {
         var p = Parser.init(tokens, allocator);
         const stmt = try parse_select(&p);
 
-        try std.testing.expectEqualStrings("users", stmt.from.name);
+        try std.testing.expectEqual(1, stmt.from.len);
+        try std.testing.expectEqualStrings("users", stmt.from[0].name);
         try std.testing.expectEqual(3, stmt.columns.len);
         try std.testing.expectEqualStrings("id", stmt.columns[0].expr.identifier.name);
         try std.testing.expectEqualStrings("name", stmt.columns[1].expr.identifier.name);
@@ -343,7 +405,8 @@ test "parse select statement" {
         var p = Parser.init(tokens, allocator);
         const stmt = try parse_select(&p);
 
-        try std.testing.expectEqualStrings("products", stmt.from.name);
+        try std.testing.expectEqual(1, stmt.from.len);
+        try std.testing.expectEqualStrings("products", stmt.from[0].name);
         try std.testing.expectEqual(10, stmt.limit.?);
     }
 
@@ -355,9 +418,38 @@ test "parse select statement" {
         var p = Parser.init(tokens, allocator);
         const stmt = try parse_select(&p);
 
-        try std.testing.expectEqualStrings("products", stmt.from.name);
+        try std.testing.expectEqual(1, stmt.from.len);
+        try std.testing.expectEqualStrings("products", stmt.from[0].name);
         try std.testing.expectEqual(10, stmt.limit.?);
         try std.testing.expectEqual(20, stmt.offset.?);
+    }
+
+    {
+        const input = "SELECT * FROM users, orders;";
+        var l = lexer.Lexer.init(input);
+        const tokens = try l.tokenize(allocator);
+
+        var p = Parser.init(tokens, allocator);
+        const stmt = try parse_select(&p);
+
+        try std.testing.expectEqual(2, stmt.from.len);
+        try std.testing.expectEqualStrings("users", stmt.from[0].name);
+        try std.testing.expectEqualStrings("orders", stmt.from[1].name);
+    }
+
+    {
+        const input = "SELECT * FROM users u, orders o WHERE u.id = o.user_id;";
+        var l = lexer.Lexer.init(input);
+        const tokens = try l.tokenize(allocator);
+
+        var p = Parser.init(tokens, allocator);
+        const stmt = try parse_select(&p);
+
+        try std.testing.expectEqual(2, stmt.from.len);
+        try std.testing.expectEqualStrings("users", stmt.from[0].name);
+        try std.testing.expectEqualStrings("u", stmt.from[0].alias.?);
+        try std.testing.expectEqualStrings("orders", stmt.from[1].name);
+        try std.testing.expectEqualStrings("o", stmt.from[1].alias.?);
     }
 }
 
@@ -374,7 +466,8 @@ test "parse join statements" {
         var p = Parser.init(tokens, allocator);
         const stmt = try parse_select(&p);
 
-        try std.testing.expectEqualStrings("users", stmt.from.name);
+        try std.testing.expectEqual(1, stmt.from.len);
+        try std.testing.expectEqualStrings("users", stmt.from[0].name);
         try std.testing.expectEqual(1, stmt.joins.len);
         try std.testing.expectEqual(ast.JoinType.inner, stmt.joins[0].join_type);
         try std.testing.expectEqualStrings("orders", stmt.joins[0].table.name);

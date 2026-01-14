@@ -25,10 +25,32 @@ const TableInfo = struct {
 pub fn compile_select(c: *Compiler, stmt: SelectStatement) !void {
     if (stmt.group_by.len > 0 or has_aggregates(stmt.columns)) {
         try compile_grouped_select(c, stmt);
-    } else if (stmt.joins.len > 0) {
+    } else if (stmt.joins.len > 0 or stmt.from.len > 1) {
         try compile_join_select(c, stmt);
     } else {
         try compile_simple_select(c, stmt);
+    }
+}
+
+pub fn compile_union(c: *Compiler, stmt: ast.UnionStatement) !void {
+    _ = try c.emit(.union_start, 0, 0, 0, "", null);
+
+    try compile_select(c, stmt.left);
+
+    try compile_union_right(c, stmt.right, stmt.all);
+}
+
+fn compile_union_right(c: *Compiler, right: *ast.UnionOrSelect, all: bool) !void {
+    switch (right.*) {
+        .select => |sel| {
+            try compile_select(c, sel);
+            _ = try c.emit(.union_merge, if (all) 1 else 0, 0, 0, "", null);
+        },
+        .union_stmt => |u| {
+            try compile_select(c, u.left);
+            _ = try c.emit(.union_merge, if (all) 1 else 0, 0, 0, "", null);
+            try compile_union_right(c, u.right, u.all);
+        },
     }
 }
 
@@ -40,7 +62,7 @@ fn has_aggregates(cols: []const ast.SelectColumn) bool {
 }
 
 fn compile_grouped_select(c: *Compiler, stmt: SelectStatement) !void {
-    const table = c.db.get_table(stmt.from.name) catch return CompilerError.TableNotFound;
+    const table = c.db.get_table(stmt.from[0].name) catch return CompilerError.TableNotFound;
     const schema = table.schema;
 
     const agg_info = try analyze_aggregates(c, stmt.columns, schema);
@@ -48,7 +70,7 @@ fn compile_grouped_select(c: *Compiler, stmt: SelectStatement) !void {
 
     _ = try c.emit(.agg_init, @intCast(agg_info.agg_cols.len), @intCast(stmt.group_by.len), 0, "", null);
 
-    _ = try c.emit(.open_read, 0, 0, 0, stmt.from.name, null);
+    _ = try c.emit(.open_read, 0, 0, 0, stmt.from[0].name, null);
     const rewind_addr = try c.emit(.rewind, 0, 0, 0, "", null);
     const loop_start = c.current_addr();
 
@@ -135,14 +157,14 @@ fn analyze_aggregates(c: *Compiler, cols: []const ast.SelectColumn, schema: *con
 }
 
 fn compile_simple_select(c: *Compiler, stmt: SelectStatement) !void {
-    const table = c.db.get_table(stmt.from.name) catch return CompilerError.TableNotFound;
+    const table = c.db.get_table(stmt.from[0].name) catch return CompilerError.TableNotFound;
     const schema = table.schema;
 
     const output_cols = try resolve_select_columns(c, stmt.columns, schema);
     defer c.allocator.free(output_cols);
 
     const index_candidate = if (stmt.where) |where_expr|
-        try find_usable_index(c, where_expr, stmt.from.name, schema)
+        try find_usable_index(c, where_expr, stmt.from[0].name, schema)
     else
         null;
 
@@ -159,19 +181,22 @@ fn compile_join_select(c: *Compiler, stmt: SelectStatement) !void {
     var tables = std.ArrayList(TableInfo){};
     defer tables.deinit(c.allocator);
 
-    const main_table = c.db.get_table(stmt.from.name) catch return CompilerError.TableNotFound;
-    try tables.append(c.allocator, .{
-        .name = if (stmt.from.alias) |a| a else stmt.from.name,
-        .schema = main_table.schema,
-        .cursor_id = 0,
-    });
+    for (stmt.from, 0..) |from_table, i| {
+        const table = c.db.get_table(from_table.name) catch return CompilerError.TableNotFound;
+        try tables.append(c.allocator, .{
+            .name = if (from_table.alias) |a| a else from_table.name,
+            .schema = table.schema,
+            .cursor_id = @intCast(i),
+        });
+    }
 
-    for (stmt.joins, 1..) |join, i| {
+    const join_cursor_start: usize = stmt.from.len;
+    for (stmt.joins, 0..) |join, i| {
         const join_table = c.db.get_table(join.table.name) catch return CompilerError.TableNotFound;
         try tables.append(c.allocator, .{
             .name = if (join.table.alias) |a| a else join.table.name,
             .schema = join_table.schema,
-            .cursor_id = @intCast(i),
+            .cursor_id = @intCast(join_cursor_start + i),
         });
     }
 
@@ -179,7 +204,7 @@ fn compile_join_select(c: *Compiler, stmt: SelectStatement) !void {
     defer c.allocator.free(output_cols);
 
     for (tables.items, 0..) |tbl, idx| {
-        const actual_name = if (idx == 0) stmt.from.name else stmt.joins[idx - 1].table.name;
+        const actual_name = if (idx < stmt.from.len) stmt.from[idx].name else stmt.joins[idx - stmt.from.len].table.name;
         _ = try c.emit(.open_read, tbl.cursor_id, 0, 0, actual_name, null);
     }
 
@@ -394,7 +419,7 @@ const ColInfo = union(enum) {
 };
 
 fn compile_full_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema, output_cols: []ColInfo) !void {
-    _ = try c.emit(.open_read, 0, 0, 0, stmt.from.name, null);
+    _ = try c.emit(.open_read, 0, 0, 0, stmt.from[0].name, null);
 
     const rewind_addr = try c.emit(.rewind, 0, 0, 0, "", null);
 
@@ -438,7 +463,7 @@ fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema
     const value_reg = c.alloc_reg();
     try expression.compile_expression(c, candidate.value, value_reg, schema);
 
-    _ = try c.emit(.open_read, 0, 0, 0, stmt.from.name, null);
+    _ = try c.emit(.open_read, 0, 0, 0, stmt.from[0].name, null);
     const scan_addr = try c.emit(.index_scan, 0, 0, value_reg, candidate.index_name, null);
 
     const loop_start = c.current_addr();

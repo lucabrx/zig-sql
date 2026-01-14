@@ -104,6 +104,7 @@ pub const Statement = union(enum) {
     savepoint_stmt: SavepointStatement,
     release_savepoint_stmt: ReleaseSavepointStatement,
     set_transaction_stmt: SetTransactionStatement,
+    union_stmt: UnionStatement,
 };
 
 pub const Node = union(enum) {
@@ -116,7 +117,7 @@ pub const Node = union(enum) {
 pub const SelectStatement = struct {
     distinct: bool,
     columns: []const SelectColumn,
-    from: TableRef,
+    from: []const TableRef,
     joins: []const JoinClause,
     where: ?Expression,
     group_by: []const []const u8,
@@ -211,6 +212,17 @@ pub const SetTransactionStatement = struct {
     isolation_level: IsolationLevel,
 };
 
+pub const UnionStatement = struct {
+    left: SelectStatement,
+    right: *UnionOrSelect,
+    all: bool,
+};
+
+pub const UnionOrSelect = union(enum) {
+    select: SelectStatement,
+    union_stmt: UnionStatement,
+};
+
 pub const CreateIndexStatement = struct {
     index_name: []const u8,
     table: []const u8,
@@ -270,11 +282,14 @@ test "usage example" {
     var columns = try std.ArrayList(SelectColumn).initCapacity(allocator, 1);
     columns.appendAssumeCapacity(SelectColumn{ .expr = Expression{ .star_expression = .{} }, .alias = null });
 
+    var from_tables = try std.ArrayList(TableRef).initCapacity(allocator, 1);
+    from_tables.appendAssumeCapacity(TableRef{ .name = "users", .alias = null });
+
     const stmt = Statement{
         .select_stmt = SelectStatement{
             .distinct = false,
             .columns = columns.items,
-            .from = TableRef{ .name = "users", .alias = null },
+            .from = from_tables.items,
             .joins = &[_]JoinClause{},
             .where = Expression{ .binary_expression = bin_expr },
             .group_by = &[_][]const u8{},
@@ -287,7 +302,7 @@ test "usage example" {
 
     switch (stmt) {
         .select_stmt => |s| {
-            std.debug.print("Selecting from table: {s}\n", .{s.from.name});
+            std.debug.print("Selecting from table: {s}\n", .{s.from[0].name});
             if (s.limit) |l| {
                 std.debug.print("Limit is: {d}\n", .{l});
             }
