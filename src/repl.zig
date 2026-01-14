@@ -23,6 +23,7 @@ pub const REPL = struct {
     pager: ?*Pager,
     db: ?*Database,
     debug_mode: bool,
+    stats_mode: bool,
 
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8, writer: *std.Io.Writer, reader: *std.Io.Reader) REPL {
         return REPL{
@@ -33,6 +34,7 @@ pub const REPL = struct {
             .pager = null,
             .db = null,
             .debug_mode = false,
+            .stats_mode = false,
         };
     }
 
@@ -99,22 +101,35 @@ pub const REPL = struct {
             \\ .help       - Show this help message
             \\ .tables     - List all tables
             \\ .indexes    - List all indexes
+            \\ .schema T   - Show schema for table T
+            \\ .views      - List all views
+            \\ .stats      - Toggle query timing
             \\ .debug      - Toggle debug mode
             \\ .checkpoint - Force WAL checkpoint
             \\ .sync       - Sync all pages to disk
+            \\ .cache      - Show cache statistics
             \\
         );
     }
 
     fn execute_meta_command(self: *REPL, cmd: []const u8) !MetaCommandResult {
+        if (std.mem.startsWith(u8, cmd, ".schema ")) {
+            const table_name = std.mem.trim(u8, cmd[8..], " ");
+            try self.show_schema(table_name);
+            return .Success;
+        }
+
         const MetaCmd = enum {
             exit,
             help,
             tables,
             indexes,
+            views,
             debug,
+            stats,
             checkpoint,
             sync,
+            cache,
         };
 
         const command = std.meta.stringToEnum(MetaCmd, cmd[1..]) orelse {
@@ -157,9 +172,22 @@ pub const REPL = struct {
                 try self.list_indexes();
                 return .Success;
             },
+            .views => {
+                try self.list_views();
+                return .Success;
+            },
             .debug => {
                 self.debug_mode = !self.debug_mode;
                 try self.writer.print("Debug mode: {s}\n", .{if (self.debug_mode) "ON" else "OFF"});
+                return .Success;
+            },
+            .stats => {
+                self.stats_mode = !self.stats_mode;
+                try self.writer.print("Query timing: {s}\n", .{if (self.stats_mode) "ON" else "OFF"});
+                return .Success;
+            },
+            .cache => {
+                try self.show_cache_stats();
                 return .Success;
             },
         }
@@ -197,11 +225,74 @@ pub const REPL = struct {
         }
     }
 
+    fn list_views(self: *REPL) !void {
+        const db = self.db orelse return;
+        var count: usize = 0;
+        var iter = db.views.iterator();
+        while (iter.next()) |entry| {
+            if (count == 0) {
+                try self.writer.writeAll("Views:\n");
+            }
+            try self.writer.print("  {s}\n", .{entry.key_ptr.*});
+            count += 1;
+        }
+        if (count == 0) {
+            try self.writer.writeAll("No views found.\n");
+        }
+    }
+
+    fn show_schema(self: *REPL, table_name: []const u8) !void {
+        const db = self.db orelse return;
+        const table = db.get_table(table_name) catch {
+            try self.writer.print("Table '{s}' not found.\n", .{table_name});
+            return;
+        };
+        const schema = table.schema;
+
+        try self.writer.print("CREATE TABLE {s} (\n", .{schema.table_name});
+        for (schema.columns, 0..) |col, i| {
+            try self.writer.print("  {s} ", .{col.name});
+            const type_str = switch (col.type) {
+                .Integer => "INTEGER",
+                .Text => "TEXT",
+                .Real => "REAL",
+                .Blob => "BLOB",
+                .Boolean => "BOOLEAN",
+                .Date => "DATE",
+                .Time => "TIME",
+                .Datetime => "DATETIME",
+            };
+            try self.writer.print("{s}", .{type_str});
+            if (col.primary_key) try self.writer.writeAll(" PRIMARY KEY");
+            if (col.not_null) try self.writer.writeAll(" NOT NULL");
+            if (col.unique) try self.writer.writeAll(" UNIQUE");
+            if (col.foreign_key) |fk| {
+                try self.writer.print(" REFERENCES {s}({s})", .{ fk.ref_table, fk.ref_column });
+            }
+            if (i < schema.columns.len - 1) {
+                try self.writer.writeAll(",");
+            }
+            try self.writer.writeAll("\n");
+        }
+        try self.writer.writeAll(");\n");
+    }
+
+    fn show_cache_stats(self: *REPL) !void {
+        const pager = self.pager orelse return;
+        const stats = pager.get_cache_stats();
+        try self.writer.print("Cache Statistics:\n", .{});
+        try self.writer.print("  Hits:   {d}\n", .{stats.hits});
+        try self.writer.print("  Misses: {d}\n", .{stats.misses});
+        try self.writer.print("  Ratio:  {d:.1}%\n", .{stats.ratio * 100});
+    }
+
     fn execute_statement(self: *REPL, input: []const u8) !void {
         const db = self.db orelse return error.DatabaseNotInitialized;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const temp_allocator = arena.allocator();
+
+        const start_time = if (self.stats_mode) std.time.nanoTimestamp() else 0;
 
         var l = lexer.Lexer.init(input);
         const tokens = try l.tokenize(temp_allocator);
@@ -270,6 +361,13 @@ pub const REPL = struct {
             try self.print_results(results);
         } else {
             try self.writer.writeAll("OK\n");
+        }
+
+        if (self.stats_mode) {
+            const end_time = std.time.nanoTimestamp();
+            const elapsed_ns = end_time - start_time;
+            const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+            try self.writer.print("Time: {d:.3}ms\n", .{elapsed_ms});
         }
     }
 
