@@ -54,7 +54,8 @@ pub fn compile_create_index(c: *Compiler, stmt: ast.CreateIndexStatement) !void 
         .table = try c.persistent_allocator.dupe(u8, stmt.table),
         .columns = columns,
         .unique = stmt.unique,
-        .root_page = 0, // Will be set by VM
+        .root_page = 0,
+        .column_indices = &[_]usize{},
     };
 
     _ = try c.emit(.create_index, 0, 0, 0, "", @ptrCast(index_def));

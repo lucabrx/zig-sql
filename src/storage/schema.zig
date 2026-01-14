@@ -68,4 +68,5 @@ pub const IndexDef = struct {
     columns: []const []const u8,
     unique: bool,
     root_page: u32,
+    column_indices: []usize,
 };

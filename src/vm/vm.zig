@@ -314,6 +314,8 @@ pub const VM = struct {
             print("[VM] op_insert: key={}, num_cols={}\n", .{ key, num_cols });
         }
 
+        try self.db.insert_into_indexes(table.schema.table_name, key, &row);
+
         try table.insert(key, &row);
         self.pc += 1;
     }
@@ -351,9 +353,15 @@ pub const VM = struct {
 
     fn op_delete(self: *VM, inst: Instruction) !void {
         const cursor = self.cursors.getPtr(inst.p1) orelse return VmErrors.NoCursor;
+        const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
         const page = try self.db.pager.get_page(cursor.page_number());
         const num_cells = storage.node.get_num_cells(page);
         const cell_to_delete = cursor.cell_number();
+
+        const rowid = storage.row.get_leaf_key(page, cell_to_delete);
+        const row = storage.row.get_leaf_row(page, cell_to_delete, table.schema);
+
+        self.db.delete_from_indexes(table.schema.table_name, rowid, &row) catch {};
 
         if (cell_to_delete < num_cells - 1) {
             var i: u32 = cell_to_delete;

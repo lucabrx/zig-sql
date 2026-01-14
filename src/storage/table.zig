@@ -7,8 +7,11 @@ const pager_mod = @import("pager.zig");
 const Pager = pager_mod.Pager;
 const row_mod = @import("row.zig");
 const DynamicRow = row_mod.DynamicRow;
+const RowValue = row_mod.RowValue;
 const Cursor = @import("cursor.zig").Cursor;
 const StorageError = @import("errors.zig").StorageError;
+const IndexBtree = @import("index_btree.zig").IndexBtree;
+const index_btree = @import("index_btree.zig");
 
 const print = std.debug.print;
 
@@ -56,12 +59,17 @@ pub const Table = struct {
     pub fn debug(self: *Table) void {
         print("[TABLE] name={s}, root_page={}\n", .{ self.schema.table_name, self.root_page });
     }
+
+    pub fn get_row_value_for_index(self: *Table, r: *const DynamicRow, col_idx: usize) RowValue {
+        return r.get_value(self.schema, col_idx);
+    }
 };
 
 pub const Database = struct {
     pager: *Pager,
     tables: std.StringHashMap(*Table),
     indexes: std.StringHashMap(*schema_mod.IndexDef),
+    index_btrees: std.StringHashMap(*IndexBtree),
     next_page: u32,
     allocator: std.mem.Allocator,
 
@@ -73,6 +81,7 @@ pub const Database = struct {
             .pager = pager,
             .tables = std.StringHashMap(*Table).init(allocator),
             .indexes = std.StringHashMap(*schema_mod.IndexDef).init(allocator),
+            .index_btrees = std.StringHashMap(*IndexBtree).init(allocator),
             .next_page = 1,
             .allocator = allocator,
         };
@@ -167,17 +176,25 @@ pub const Database = struct {
             return StorageError.IndexAlreadyExists;
         }
 
+        const table = try self.get_table(index_def.table);
+
+        const col_indices = try self.allocator.alloc(usize, index_def.columns.len);
+        for (index_def.columns, 0..) |col_name, i| {
+            col_indices[i] = try table.schema.get_column_index(col_name);
+        }
+        index_def.column_indices = col_indices;
+
         const root_page = self.next_page;
         self.next_page += 1;
         index_def.root_page = root_page;
 
-        const page = try self.pager.get_page(root_page);
-        const node = @import("node.zig");
-        node.initialize_leaf_node(page);
-        node.set_node_root(page, true);
-        self.pager.mark_dirty(root_page);
+        const idx_btree = try self.allocator.create(IndexBtree);
+        idx_btree.* = IndexBtree.init(self.pager, root_page);
+        _ = try self.pager.get_page(root_page);
+        try idx_btree.initialize();
 
         try self.indexes.put(owned_name, index_def);
+        try self.index_btrees.put(owned_name, idx_btree);
         try self.save_metadata();
 
         print("[DB] Created index '{s}' on table '{s}' at page {}\n", .{ owned_name, index_def.table, root_page });
@@ -200,15 +217,68 @@ pub const Database = struct {
         const kv = self.indexes.fetchRemove(name) orelse return StorageError.IndexNotFound;
         const index_def = kv.value;
 
+        if (self.index_btrees.fetchRemove(name)) |btree_kv| {
+            self.allocator.destroy(btree_kv.value);
+        }
+
         self.allocator.free(index_def.name);
         self.allocator.free(index_def.table);
         for (index_def.columns) |col| {
             self.allocator.free(col);
         }
         self.allocator.free(index_def.columns);
+        if (index_def.column_indices.len > 0) {
+            self.allocator.free(index_def.column_indices);
+        }
         self.allocator.destroy(index_def);
         self.allocator.free(kv.key);
         print("[DB] Dropped index '{s}'\n", .{name});
+    }
+
+    pub fn insert_into_indexes(self: *Database, table_name: []const u8, rowid: u32, row: *const DynamicRow) !void {
+        const table = try self.get_table(table_name);
+
+        var idx_iter = self.indexes.iterator();
+        while (idx_iter.next()) |entry| {
+            const index_def = entry.value_ptr.*;
+            if (!std.mem.eql(u8, index_def.table, table_name)) continue;
+
+            const idx_btree = self.index_btrees.get(entry.key_ptr.*) orelse continue;
+
+            const key_hash = compute_index_hash(row, table.schema, index_def.column_indices);
+
+            if (index_def.unique) {
+                if (try idx_btree.contains(key_hash)) {
+                    return StorageError.UniqueConstraintViolation;
+                }
+            }
+
+            try idx_btree.insert(key_hash, rowid);
+        }
+    }
+
+    pub fn delete_from_indexes(self: *Database, table_name: []const u8, rowid: u32, row: *const DynamicRow) !void {
+        const table = try self.get_table(table_name);
+
+        var idx_iter = self.indexes.iterator();
+        while (idx_iter.next()) |entry| {
+            const index_def = entry.value_ptr.*;
+            if (!std.mem.eql(u8, index_def.table, table_name)) continue;
+
+            const idx_btree = self.index_btrees.get(entry.key_ptr.*) orelse continue;
+
+            const key_hash = compute_index_hash(row, table.schema, index_def.column_indices);
+            try idx_btree.delete(key_hash, rowid);
+        }
+    }
+
+    pub fn find_by_index(self: *Database, index_name: []const u8, value_hash: u32, results: *std.ArrayList(u32)) !void {
+        const idx_btree = self.index_btrees.get(index_name) orelse return StorageError.IndexNotFound;
+        try idx_btree.find(value_hash, self.allocator, results);
+    }
+
+    pub fn get_index_btree(self: *Database, index_name: []const u8) !*IndexBtree {
+        return self.index_btrees.get(index_name) orelse StorageError.IndexNotFound;
     }
 
     fn save_metadata(self: *Database) !void {
@@ -224,7 +294,6 @@ pub const Database = struct {
         var iter = self.tables.iterator();
         while (iter.next()) |entry| {
             const table = entry.value_ptr.*;
-            // Free schema data
             const schema = table.schema;
             for (schema.columns) |col| {
                 self.allocator.free(col.name);
@@ -247,10 +316,19 @@ pub const Database = struct {
                 self.allocator.free(col);
             }
             self.allocator.free(index_def.columns);
+            if (index_def.column_indices.len > 0) {
+                self.allocator.free(index_def.column_indices);
+            }
             self.allocator.destroy(index_def);
             self.allocator.free(entry.key_ptr.*);
         }
         self.indexes.deinit();
+
+        var btree_iter = self.index_btrees.iterator();
+        while (btree_iter.next()) |entry| {
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.index_btrees.deinit();
     }
 
     pub fn debug(self: *Database) void {
@@ -272,4 +350,21 @@ test "table initialization" {
 
     try std.testing.expectEqual(@as(u32, 0), table.root_page);
     try std.testing.expectEqualStrings("test", table.schema.table_name);
+}
+
+fn compute_index_hash(row: *const DynamicRow, schema: *const Schema, col_indices: []const usize) u32 {
+    var hash: u32 = 0;
+    for (col_indices) |col_idx| {
+        const val = row.get_value(schema, col_idx);
+        const val_hash: u32 = switch (val) {
+            .integer => |v| index_btree.hash_int(v),
+            .real => |v| index_btree.hash_float(v),
+            .text => |v| index_btree.hash_bytes(v),
+            .blob => |v| index_btree.hash_bytes(v),
+            .boolean => |v| if (v) @as(u32, 1) else @as(u32, 0),
+            .null_val => 0,
+        };
+        hash = hash *% 31 +% val_hash;
+    }
+    return hash;
 }
