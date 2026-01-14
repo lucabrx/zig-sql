@@ -5,6 +5,7 @@ const btree_mod = @import("btree.zig");
 const Btree = btree_mod.Btree;
 const pager_mod = @import("pager.zig");
 const Pager = pager_mod.Pager;
+const PAGE_SIZE = pager_mod.PAGE_SIZE;
 const row_mod = @import("row.zig");
 const DynamicRow = row_mod.DynamicRow;
 const RowValue = row_mod.RowValue;
@@ -13,6 +14,7 @@ const StorageError = @import("errors.zig").StorageError;
 const IndexBtree = @import("index_btree.zig").IndexBtree;
 const index_btree = @import("index_btree.zig");
 const Transaction = @import("transaction.zig").Transaction;
+const Wal = @import("wal.zig").Wal;
 
 const print = std.debug.print;
 
@@ -74,11 +76,24 @@ pub const Database = struct {
     next_page: u32,
     allocator: std.mem.Allocator,
     transaction: Transaction,
+    wal: ?*Wal,
+    db_filename: []const u8,
 
     const MAGIC: *const [4]u8 = "ZSQL";
     const VERSION: u32 = 1;
 
     pub fn init(allocator: std.mem.Allocator, pager: *Pager) !Database {
+        return try initWithFilename(allocator, pager, ":memory:");
+    }
+
+    pub fn initWithFilename(allocator: std.mem.Allocator, pager: *Pager, filename: []const u8) !Database {
+        var wal: ?*Wal = null;
+        if (!std.mem.eql(u8, filename, ":memory:")) {
+            const wal_ptr = try allocator.create(Wal);
+            wal_ptr.* = try Wal.init(allocator, filename);
+            wal = wal_ptr;
+        }
+
         var db = Database{
             .pager = pager,
             .tables = std.StringHashMap(*Table).init(allocator),
@@ -87,7 +102,16 @@ pub const Database = struct {
             .next_page = 1,
             .allocator = allocator,
             .transaction = Transaction.init(allocator, pager),
+            .wal = wal,
+            .db_filename = filename,
         };
+
+        if (wal) |w| {
+            const recovered = try w.recover(pager);
+            if (recovered > 0) {
+                print("[DB] Recovered {} pages from WAL\n", .{recovered});
+            }
+        }
 
         if (pager.num_pages > 0) {
             try db.load_metadata();
@@ -289,10 +313,39 @@ pub const Database = struct {
         std.mem.writeInt(u32, page.data[12..16], self.next_page, .little);
         std.mem.writeInt(u32, page.data[8..12], @intCast(self.tables.count()), .little);
         self.pager.mark_dirty(0);
+        if (self.wal) |w| {
+            try w.log_page_write(0, &page.data);
+        }
+    }
+
+    pub fn wal_log_page(self: *Database, page_num: u32) !void {
+        if (self.wal) |w| {
+            const page = try self.pager.get_page(page_num);
+            try w.log_page_write(page_num, &page.data);
+        }
+    }
+
+    pub fn wal_commit(self: *Database) !void {
+        if (self.wal) |w| {
+            try w.log_commit();
+        }
+    }
+
+    pub fn wal_checkpoint(self: *Database) !void {
+        if (self.wal) |w| {
+            try w.checkpoint(self.pager);
+        }
     }
 
     pub fn close(self: *Database) void {
         self.save_metadata() catch {};
+
+        if (self.wal) |w| {
+            w.checkpoint(self.pager) catch {};
+            w.deinit();
+            self.allocator.destroy(w);
+        }
+
         self.transaction.deinit();
 
         var iter = self.tables.iterator();

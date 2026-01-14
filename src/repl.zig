@@ -42,7 +42,7 @@ pub const REPL = struct {
         self.pager = pager;
 
         const db = try self.allocator.create(Database);
-        db.* = try Database.init(self.allocator, pager);
+        db.* = try Database.initWithFilename(self.allocator, pager, self.db_path);
         self.db = db;
 
         try self.writer.print("ZQL Database v0.1\n", .{});
@@ -95,11 +95,12 @@ pub const REPL = struct {
     fn print_help(self: *REPL) !void {
         _ = try self.writer.writeAll(
             \\Meta commands:
-            \\ .exit    - Exit this program
-            \\ .help    - Show this help message
-            \\ .tables  - List all tables
-            \\ .indexes - List all indexes
-            \\ .debug   - Toggle debug mode
+            \\ .exit       - Exit this program
+            \\ .help       - Show this help message
+            \\ .tables     - List all tables
+            \\ .indexes    - List all indexes
+            \\ .debug      - Toggle debug mode
+            \\ .checkpoint - Force WAL checkpoint
             \\
         );
     }
@@ -111,6 +112,7 @@ pub const REPL = struct {
             tables,
             indexes,
             debug,
+            checkpoint,
         };
 
         const command = std.meta.stringToEnum(MetaCmd, cmd[1..]) orelse {
@@ -125,6 +127,15 @@ pub const REPL = struct {
             },
             .help => {
                 try self.print_help();
+                return .Success;
+            },
+            .checkpoint => {
+                const db = self.db orelse return .Success;
+                db.wal_checkpoint() catch |err| {
+                    try self.writer.print("Checkpoint error: {s}\n", .{@errorName(err)});
+                    return .Success;
+                };
+                try self.writer.writeAll("Checkpoint complete.\n");
                 return .Success;
             },
             .tables => {

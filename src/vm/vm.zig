@@ -335,6 +335,9 @@ pub const VM = struct {
         try self.db.transaction.save_page_for_rollback(table.btree.root_page);
 
         try table.insert(key, &row);
+
+        try self.db.wal_log_page(table.btree.root_page);
+
         self.pc += 1;
     }
 
@@ -433,6 +436,7 @@ pub const VM = struct {
     }
 
     fn op_txn_commit(self: *VM) !void {
+        try self.db.wal_commit();
         try self.db.transaction.commit();
         self.pc += 1;
     }
@@ -497,6 +501,9 @@ pub const VM = struct {
         }
         storage.node.set_num_cells(page, num_cells - 1);
         self.db.pager.mark_dirty(page_num);
+
+        try self.db.wal_log_page(page_num);
+
         self.pc += 1;
     }
 
