@@ -363,6 +363,13 @@ pub const REPL = struct {
                 }
                 try self.writer.print(" {s}\n", .{drop_stmt.table});
             },
+            .drop_index_stmt => |drop_stmt| {
+                try self.writer.print("DROP INDEX", .{});
+                if (drop_stmt.if_exists) {
+                    try self.writer.writeAll(" IF EXISTS");
+                }
+                try self.writer.print(" {s}\n", .{drop_stmt.index_name});
+            },
         }
     }
 

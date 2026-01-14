@@ -196,6 +196,21 @@ pub const Database = struct {
         return try names.toOwnedSlice(self.allocator);
     }
 
+    pub fn drop_index(self: *Database, name: []const u8) !void {
+        const kv = self.indexes.fetchRemove(name) orelse return StorageError.IndexNotFound;
+        const index_def = kv.value;
+
+        self.allocator.free(index_def.name);
+        self.allocator.free(index_def.table);
+        for (index_def.columns) |col| {
+            self.allocator.free(col);
+        }
+        self.allocator.free(index_def.columns);
+        self.allocator.destroy(index_def);
+        self.allocator.free(kv.key);
+        print("[DB] Dropped index '{s}'\n", .{name});
+    }
+
     fn save_metadata(self: *Database) !void {
         const page = try self.pager.get_page(0);
         std.mem.writeInt(u32, page.data[12..16], self.next_page, .little);

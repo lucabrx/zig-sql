@@ -46,6 +46,7 @@ pub const Compiler = struct {
             .delete_stmt => |s| try delete.compile_delete(self, s),
             .update_stmt => |s| try update.compile_update(self, s),
             .drop_table_stmt => |s| try schema.compile_drop_table(self, s),
+            .drop_index_stmt => |s| try schema.compile_drop_index(self, s),
         }
 
         _ = try self.emit(.halt, 0, 0, 0, "", null);

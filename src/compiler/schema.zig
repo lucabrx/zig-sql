@@ -33,6 +33,11 @@ pub fn compile_drop_table(c: *Compiler, stmt: DropTableStatement) !void {
     _ = try c.emit(.drop_table, if_exists, 0, 0, stmt.table, null);
 }
 
+pub fn compile_drop_index(c: *Compiler, stmt: ast.DropIndexStatement) !void {
+    const if_exists: i32 = if (stmt.if_exists) 1 else 0;
+    _ = try c.emit(.drop_index, if_exists, 0, 0, stmt.index_name, null);
+}
+
 pub fn compile_create_index(c: *Compiler, stmt: ast.CreateIndexStatement) !void {
     const IndexDef = @import("../storage/schema.zig").IndexDef;
 

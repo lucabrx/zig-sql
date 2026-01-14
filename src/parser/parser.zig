@@ -148,9 +148,10 @@ pub const Parser = struct {
                 };
             },
             token.TokenType.drop => {
-                const stmt = try other.parse_drop(self);
-                return ast.Statement{
-                    .drop_table_stmt = stmt,
+                const result = try other.parse_drop(self);
+                return switch (result) {
+                    .table => |stmt| ast.Statement{ .drop_table_stmt = stmt },
+                    .index => |stmt| ast.Statement{ .drop_index_stmt = stmt },
                 };
             },
             else => {

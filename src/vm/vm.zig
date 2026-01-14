@@ -189,6 +189,7 @@ pub const VM = struct {
             .create_table => try self.op_create_table(inst),
             .create_index => try self.op_create_index(inst),
             .drop_table => try self.op_drop_table(inst),
+            .drop_index => try self.op_drop_index(inst),
             .eq, .ne, .lt, .le, .gt, .ge => try self.op_compare(inst),
             .delete => try self.op_delete(inst),
             else => return VmErrors.InvalidOp,
@@ -336,6 +337,13 @@ pub const VM = struct {
 
     fn op_drop_table(self: *VM, inst: Instruction) !void {
         self.db.drop_table(inst.p4) catch |err| {
+            if (inst.p1 == 0) return err;
+        };
+        self.pc += 1;
+    }
+
+    fn op_drop_index(self: *VM, inst: Instruction) !void {
+        self.db.drop_index(inst.p4) catch |err| {
             if (inst.p1 == 0) return err;
         };
         self.pc += 1;

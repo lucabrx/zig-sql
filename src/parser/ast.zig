@@ -20,6 +20,7 @@ pub const Statement = union(enum) {
     delete_stmt: DeleteStatement,
     update_stmt: UpdateStatement,
     drop_table_stmt: DropTableStatement,
+    drop_index_stmt: DropIndexStatement,
 };
 
 pub const Node = union(enum) {
@@ -79,6 +80,11 @@ pub const Assignment = struct {
 
 pub const DropTableStatement = struct {
     table: []const u8,
+    if_exists: bool,
+};
+
+pub const DropIndexStatement = struct {
+    index_name: []const u8,
     if_exists: bool,
 };
 

@@ -58,6 +58,7 @@ pub const Opcode = enum(u8) {
     create_table,
     create_index,
     drop_table,
+    drop_index,
 
     pub fn to_string(self: Opcode) []const u8 {
         return switch (self) {
@@ -99,6 +100,7 @@ pub const Opcode = enum(u8) {
             .create_table => "CREATE_TABLE",
             .create_index => "CREATE_INDEX",
             .drop_table => "DROP_TABLE",
+            .drop_index => "DROP_INDEX",
         };
     }
 };

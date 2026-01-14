@@ -65,15 +65,30 @@ pub fn parse_update(self: *Parser) ParserError!ast.UpdateStatement {
 
     return stmt.*;
 }
-pub fn parse_drop(self: *Parser) ParserError!ast.DropTableStatement {
+pub const DropResult = union(enum) {
+    table: ast.DropTableStatement,
+    index: ast.DropIndexStatement,
+};
+
+pub fn parse_drop(self: *Parser) ParserError!DropResult {
+    self.advance();
+
+    if (self.current.type == token.TokenType.index) {
+        return DropResult{ .index = try parse_drop_index(self) };
+    }
+
+    if (self.current.type != token.TokenType.table) {
+        return error.UnexpectedToken;
+    }
+
+    return DropResult{ .table = try parse_drop_table(self) };
+}
+
+fn parse_drop_table(self: *Parser) ParserError!ast.DropTableStatement {
     const stmt = self.allocator.create(ast.DropTableStatement) catch return error.OutOfMemory;
     stmt.if_exists = false;
 
-    self.advance();
-
-    if (!self.expect(token.TokenType.table)) {
-        return error.UnexpectedToken;
-    }
+    self.advance(); // consume TABLE
 
     if (self.current.type == token.TokenType.@"if") {
         self.advance();
@@ -88,6 +103,34 @@ pub fn parse_drop(self: *Parser) ParserError!ast.DropTableStatement {
         return error.ExpectedIdentifier;
     }
     stmt.table = self.current.literal;
+    self.advance();
+
+    if (self.current.type == token.TokenType.semicolon) {
+        self.advance();
+    }
+
+    return stmt.*;
+}
+
+fn parse_drop_index(self: *Parser) ParserError!ast.DropIndexStatement {
+    const stmt = self.allocator.create(ast.DropIndexStatement) catch return error.OutOfMemory;
+    stmt.if_exists = false;
+
+    self.advance(); // consume INDEX
+
+    if (self.current.type == token.TokenType.@"if") {
+        self.advance();
+        if (self.current.type == token.TokenType.exists) {
+            stmt.if_exists = true;
+            self.advance();
+        }
+    }
+
+    if (self.current.type != token.TokenType.ident) {
+        self.addError("Expected index name, got '{s}'", .{@tagName(self.current.type)});
+        return error.ExpectedIdentifier;
+    }
+    stmt.index_name = self.current.literal;
     self.advance();
 
     if (self.current.type == token.TokenType.semicolon) {
@@ -209,7 +252,8 @@ test "parse drop table statement" {
         const tokens = try l.tokenize(allocator);
 
         var p = Parser.init(tokens, allocator);
-        const stmt = try parse_drop(&p);
+        const result = try parse_drop(&p);
+        const stmt = result.table;
 
         try std.testing.expectEqualStrings("users", stmt.table);
         try std.testing.expect(!stmt.if_exists);
@@ -221,9 +265,42 @@ test "parse drop table statement" {
         const tokens = try l.tokenize(allocator);
 
         var p = Parser.init(tokens, allocator);
-        const stmt = try parse_drop(&p);
+        const result = try parse_drop(&p);
+        const stmt = result.table;
 
         try std.testing.expectEqualStrings("users", stmt.table);
+        try std.testing.expect(stmt.if_exists);
+    }
+}
+
+test "parse drop index statement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    {
+        const input = "DROP INDEX idx_email;";
+        var l = lexer.Lexer.init(input);
+        const tokens = try l.tokenize(allocator);
+
+        var p = Parser.init(tokens, allocator);
+        const result = try parse_drop(&p);
+        const stmt = result.index;
+
+        try std.testing.expectEqualStrings("idx_email", stmt.index_name);
+        try std.testing.expect(!stmt.if_exists);
+    }
+
+    {
+        const input = "DROP INDEX IF EXISTS idx_email;";
+        var l = lexer.Lexer.init(input);
+        const tokens = try l.tokenize(allocator);
+
+        var p = Parser.init(tokens, allocator);
+        const result = try parse_drop(&p);
+        const stmt = result.index;
+
+        try std.testing.expectEqualStrings("idx_email", stmt.index_name);
         try std.testing.expect(stmt.if_exists);
     }
 }
