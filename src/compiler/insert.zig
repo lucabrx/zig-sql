@@ -71,6 +71,25 @@ pub fn compile_value_expression(c: *Compiler, expr: Expression, dest_reg: i32) !
         .boolean_literal => |bool_lit| {
             _ = try c.emit(.integer, dest_reg, if (bool_lit.value) 1 else 0, 0, "", null);
         },
+        .unary_expression => |unary| {
+            if (std.mem.eql(u8, unary.operator, "-")) {
+                switch (unary.right) {
+                    .integer_literal => |int_lit| {
+                        _ = try c.emit(.integer, dest_reg, @intCast(-int_lit.value), 0, "", null);
+                    },
+                    .float_literal => |float_lit| {
+                        const float_ptr = c.allocator.create(f64) catch return CompilerError.OutOfMemory;
+                        float_ptr.* = -float_lit.value;
+                        _ = try c.emit(.real, dest_reg, 0, 0, "", @ptrCast(float_ptr));
+                    },
+                    else => {
+                        _ = try c.emit(.null, dest_reg, 0, 0, "", null);
+                    },
+                }
+            } else {
+                _ = try c.emit(.null, dest_reg, 0, 0, "", null);
+            }
+        },
         else => {
             _ = try c.emit(.null, dest_reg, 0, 0, "", null);
         },

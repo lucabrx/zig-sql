@@ -116,6 +116,7 @@ pub const TokenType = enum {
     substr,
     concat,
     trim,
+    check,
 
     pub fn toString(self: TokenType) []const u8 {
         return switch (self) {
@@ -230,6 +231,7 @@ pub const TokenType = enum {
             .substr => "SUBSTR",
             .concat => "CONCAT",
             .trim => "TRIM",
+            .check => "CHECK",
         };
     }
 };
@@ -331,6 +333,7 @@ const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "SUBSTR", .substr },
     .{ "CONCAT", .concat },
     .{ "TRIM", .trim },
+    .{ "CHECK", .check },
 });
 
 pub fn lookup_ident(ident: []const u8) TokenType {

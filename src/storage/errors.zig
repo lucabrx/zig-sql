@@ -8,6 +8,7 @@ pub const StorageError = error{
     IndexAlreadyExists,
     IndexFull,
     UniqueConstraintViolation,
+    CheckConstraintViolation,
     PageOutOfBounds,
     PageNotFound,
     IncompleteRead,

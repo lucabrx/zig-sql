@@ -170,9 +170,11 @@ pub const CreateTableStatement = struct {
 
 pub const ColumnDef = struct {
     name: []const u8,
-    type_name: []const u8, // 'type' is a reserved keyword in Zig
+    type_name: []const u8,
     primary_key: bool,
     not_null: bool,
+    check: ?[]const u8 = null,
+    unique: bool = false,
 };
 
 pub const DeleteStatement = struct {

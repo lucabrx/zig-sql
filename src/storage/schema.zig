@@ -27,6 +27,8 @@ pub const Column = struct {
     primary_key: bool,
     not_null: bool,
     default: DefaultValue = .{ .none = {} },
+    check: ?[]const u8 = null,
+    unique: bool = false,
 };
 
 pub const Schema = struct {

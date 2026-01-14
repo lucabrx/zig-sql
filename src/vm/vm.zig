@@ -425,6 +425,117 @@ pub const VM = struct {
         }
     }
 
+    fn validate_check_constraints(self: *VM, table: *storage.Table, start_reg: usize, num_cols: usize) !void {
+        const schema = table.schema;
+        const cols_to_check = @min(num_cols, schema.columns.len);
+        for (0..cols_to_check) |i| {
+            const col = schema.columns[i];
+            if (col.check) |check_expr| {
+                const reg = self.registers[start_reg + i];
+                if (reg.type == .null or reg.is_null) continue;
+
+                if (!self.eval_check_expr(check_expr, col.name, reg)) {
+                    return VmErrors.CheckConstraintViolation;
+                }
+            }
+        }
+    }
+
+    fn eval_check_expr(self: *VM, check_expr: []const u8, col_name: []const u8, val: RegisterValue) bool {
+        _ = self;
+        const Op = enum { gt, gte, lt, lte, eq, neq };
+        var op: Op = .gt;
+        var op_pos: usize = 0;
+        var op_len: usize = 1;
+
+        if (std.mem.indexOf(u8, check_expr, ">=")) |pos| {
+            op = .gte;
+            op_pos = pos;
+            op_len = 2;
+        } else if (std.mem.indexOf(u8, check_expr, "<=")) |pos| {
+            op = .lte;
+            op_pos = pos;
+            op_len = 2;
+        } else if (std.mem.indexOf(u8, check_expr, "!=")) |pos| {
+            op = .neq;
+            op_pos = pos;
+            op_len = 2;
+        } else if (std.mem.indexOf(u8, check_expr, "<>")) |pos| {
+            op = .neq;
+            op_pos = pos;
+            op_len = 2;
+        } else if (std.mem.indexOf(u8, check_expr, ">")) |pos| {
+            op = .gt;
+            op_pos = pos;
+        } else if (std.mem.indexOf(u8, check_expr, "<")) |pos| {
+            op = .lt;
+            op_pos = pos;
+        } else if (std.mem.indexOf(u8, check_expr, "=")) |pos| {
+            op = .eq;
+            op_pos = pos;
+        } else {
+            return true;
+        }
+
+        const left_part = std.mem.trim(u8, check_expr[0..op_pos], " ");
+        const right_part = std.mem.trim(u8, check_expr[op_pos + op_len ..], " ");
+
+        const is_col_left = std.mem.eql(u8, left_part, col_name);
+        const compare_str = if (is_col_left) right_part else left_part;
+
+        const compare_val = std.fmt.parseInt(i64, compare_str, 10) catch return true;
+
+        if (val.type != .integer) return true;
+
+        const col_val = val.integer;
+        var actual_op = op;
+        if (!is_col_left) {
+            actual_op = switch (op) {
+                .gt => .lt,
+                .gte => .lte,
+                .lt => .gt,
+                .lte => .gte,
+                .eq => .eq,
+                .neq => .neq,
+            };
+        }
+
+        return switch (actual_op) {
+            .gt => col_val > compare_val,
+            .gte => col_val >= compare_val,
+            .lt => col_val < compare_val,
+            .lte => col_val <= compare_val,
+            .eq => col_val == compare_val,
+            .neq => col_val != compare_val,
+        };
+    }
+
+    fn validate_unique_constraints(self: *VM, table: *storage.Table, start_reg: usize, num_cols: usize) !void {
+        const schema = table.schema;
+        const cols_to_check = @min(num_cols, schema.columns.len);
+
+        for (0..cols_to_check) |i| {
+            const col = schema.columns[i];
+            if (!col.unique) continue;
+            if (col.primary_key) continue;
+
+            const reg = self.registers[start_reg + i];
+            if (reg.type == .null or reg.is_null) continue;
+
+            var cursor = storage.Cursor.new_cursor_start(&table.btree) catch continue;
+            while (!cursor.is_end()) {
+                const page = self.db.pager.get_page(cursor.page_num) catch break;
+                const existing_val = storage.row.get_value_from_page(page, cursor.cell_num, schema, i);
+                const existing_reg = RegisterValue.from_row_value(existing_val);
+
+                if (self.values_equal(reg, existing_reg)) {
+                    return VmErrors.UniqueConstraintViolation;
+                }
+                cursor.advance() catch break;
+            }
+        }
+    }
+
     fn op_insert(self: *VM, inst: Instruction) !void {
         const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
         const start_reg: usize = @intCast(inst.p2);
@@ -444,6 +555,8 @@ pub const VM = struct {
 
         try self.validate_not_null_constraints(table, start_reg, num_cols);
         try self.validate_type_constraints(table, start_reg, num_cols);
+        try self.validate_check_constraints(table, start_reg, num_cols);
+        try self.validate_unique_constraints(table, start_reg, num_cols);
 
         const key: u32 = @intCast(self.registers[start_reg].integer);
 

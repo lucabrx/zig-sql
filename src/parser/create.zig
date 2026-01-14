@@ -195,25 +195,56 @@ fn parse_column_def(self: *Parser) ParseError!ast.ColumnDef {
         },
     }
 
-    if (self.current.type == token.TokenType.primary) {
-        self.advance();
-        if (self.current.type == token.TokenType.key) {
-            col.primary_key = true;
+    while (true) {
+        if (self.current.type == token.TokenType.primary) {
             self.advance();
-        } else {
-            self.addError("Expected 'KEY' after 'PRIMARY', got '{s}'", .{@tagName(self.current.type)});
-            return error.ExpectedKeyKeyword;
-        }
-    }
-
-    if (self.current.type == token.TokenType.not) {
-        self.advance();
-        if (self.current.type == token.TokenType.null) {
-            col.not_null = true;
+            if (self.current.type == token.TokenType.key) {
+                col.primary_key = true;
+                self.advance();
+            } else {
+                self.addError("Expected 'KEY' after 'PRIMARY', got '{s}'", .{@tagName(self.current.type)});
+                return error.ExpectedKeyKeyword;
+            }
+        } else if (self.current.type == token.TokenType.not) {
             self.advance();
+            if (self.current.type == token.TokenType.null) {
+                col.not_null = true;
+                self.advance();
+            } else {
+                self.addError("Expected 'NULL' after 'NOT', got '{s}'", .{@tagName(self.current.type)});
+                return error.ExpectedNullKeyword;
+            }
+        } else if (self.current.type == token.TokenType.unique) {
+            col.unique = true;
+            self.advance();
+        } else if (self.current.type == token.TokenType.check) {
+            self.advance();
+            if (!self.expect(token.TokenType.lparen)) {
+                return error.ExpectedOpenParen;
+            }
+            var depth: i32 = 1;
+            var expr_parts = std.ArrayList(u8){};
+            defer expr_parts.deinit(self.allocator);
+            while (depth > 0 and self.current.type != token.TokenType.eof) {
+                if (self.current.type == token.TokenType.lparen) depth += 1;
+                if (self.current.type == token.TokenType.rparen) {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+                for (self.current.literal) |c| {
+                    expr_parts.append(self.allocator, c) catch {};
+                }
+                expr_parts.append(self.allocator, ' ') catch {};
+                self.advance();
+            }
+            if (expr_parts.items.len > 0) {
+                col.check = expr_parts.toOwnedSlice(self.allocator) catch null;
+            }
+            if (!self.expect(token.TokenType.rparen)) {
+                return error.ExpectedCloseParen;
+            }
         } else {
-            self.addError("Expected 'NULL' after 'NOT', got '{s}'", .{@tagName(self.current.type)});
-            return error.ExpectedNullKeyword;
+            break;
         }
     }
 

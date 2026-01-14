@@ -8,4 +8,6 @@ pub const VmErrors = error{
     NoTable,
     NullConstraintViolation,
     TypeMismatch,
+    CheckConstraintViolation,
+    UniqueConstraintViolation,
 };

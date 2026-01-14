@@ -17,6 +17,8 @@ pub fn compile_create_table(c: *Compiler, stmt: CreateTableStatement) !void {
             .type = map_column_type(col_def.type_name),
             .primary_key = col_def.primary_key,
             .not_null = col_def.not_null,
+            .check = if (col_def.check) |chk| try c.persistent_allocator.dupe(u8, chk) else null,
+            .unique = col_def.unique,
         };
     }
 
