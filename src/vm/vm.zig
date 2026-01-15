@@ -3,6 +3,7 @@ const opcode = @import("opcode.zig");
 const Opcode = opcode.Opcode;
 const Instruction = opcode.Instruction;
 const VmErrors = @import("errors.zig").VmErrors;
+const ErrorContext = @import("errors.zig").ErrorContext;
 
 const storage = struct {
     const Database = @import("../storage/table.zig").Database;
@@ -135,6 +136,7 @@ pub const VM = struct {
     num_aggs: usize = 0,
     num_group_cols: usize = 0,
     group_keys: std.AutoHashMap(u64, []RegisterValue),
+    error_context: ErrorContext = ErrorContext{},
 
     pub fn init(allocator: std.mem.Allocator, db: *storage.Database) VM {
         return VM{
@@ -176,6 +178,10 @@ pub const VM = struct {
 
     pub fn set_debug(self: *VM, enabled: bool) void {
         self.debug = enabled;
+    }
+
+    pub fn get_error_message(self: *VM) ![]const u8 {
+        return self.error_context.format(self.allocator);
     }
 
     pub fn load(self: *VM, program: []const Instruction) void {
@@ -404,6 +410,11 @@ pub const VM = struct {
             if (col.not_null) {
                 const reg = self.registers[start_reg + i];
                 if (reg.type == .null or reg.is_null) {
+                    self.error_context = .{
+                        .error_type = .null_constraint,
+                        .table_name = schema.table_name,
+                        .column_name = col.name,
+                    };
                     return VmErrors.NullConstraintViolation;
                 }
             }
@@ -425,7 +436,16 @@ pub const VM = struct {
                 .Blob => reg.type == .blob or reg.type == .text,
                 .Boolean => reg.type == .boolean or reg.type == .integer,
             };
-            if (!valid) return VmErrors.TypeMismatch;
+            if (!valid) {
+                self.error_context = .{
+                    .error_type = .type_mismatch,
+                    .table_name = schema.table_name,
+                    .column_name = col.name,
+                    .expected_type = @tagName(col.type),
+                    .actual_type = @tagName(reg.type),
+                };
+                return VmErrors.TypeMismatch;
+            }
         }
     }
 
@@ -439,6 +459,12 @@ pub const VM = struct {
                 if (reg.type == .null or reg.is_null) continue;
 
                 if (!self.eval_check_expr(check_expr, col.name, reg)) {
+                    self.error_context = .{
+                        .error_type = .check_constraint,
+                        .table_name = schema.table_name,
+                        .column_name = col.name,
+                        .constraint_name = check_expr,
+                    };
                     return VmErrors.CheckConstraintViolation;
                 }
             }
@@ -533,6 +559,12 @@ pub const VM = struct {
                 const existing_reg = RegisterValue.from_row_value(existing_val);
 
                 if (self.values_equal(reg, existing_reg)) {
+                    self.error_context = .{
+                        .error_type = .unique_constraint,
+                        .table_name = schema.table_name,
+                        .column_name = col.name,
+                        .value = if (reg.type == .text) reg.text else "",
+                    };
                     return VmErrors.UniqueConstraintViolation;
                 }
                 cursor.advance() catch break;
@@ -552,10 +584,24 @@ pub const VM = struct {
             if (reg.type == .null or reg.is_null) continue;
 
             const ref_table = self.db.get_table(fk.ref_table) catch {
+                self.error_context = .{
+                    .error_type = .foreign_key_missing_ref,
+                    .table_name = schema.table_name,
+                    .column_name = col.name,
+                    .ref_table = fk.ref_table,
+                    .ref_column = fk.ref_column,
+                };
                 return VmErrors.ForeignKeyViolation;
             };
 
             const ref_col_idx = ref_table.schema.get_column_index(fk.ref_column) catch {
+                self.error_context = .{
+                    .error_type = .foreign_key_missing_ref,
+                    .table_name = schema.table_name,
+                    .column_name = col.name,
+                    .ref_table = fk.ref_table,
+                    .ref_column = fk.ref_column,
+                };
                 return VmErrors.ForeignKeyViolation;
             };
 
@@ -574,6 +620,13 @@ pub const VM = struct {
             }
 
             if (!found) {
+                self.error_context = .{
+                    .error_type = .foreign_key_missing_ref,
+                    .table_name = schema.table_name,
+                    .column_name = col.name,
+                    .ref_table = fk.ref_table,
+                    .ref_column = fk.ref_column,
+                };
                 return VmErrors.ForeignKeyViolation;
             }
         }
@@ -821,6 +874,13 @@ pub const VM = struct {
                     },
                     .restrict => {
                         if (try self.has_referencing_rows(child_table, col_idx, deleted_val)) {
+                            self.error_context = .{
+                                .error_type = .foreign_key_restrict,
+                                .table_name = parent_table.schema.table_name,
+                                .column_name = fk.ref_column,
+                                .ref_table = child_schema.table_name,
+                                .ref_column = col.name,
+                            };
                             return VmErrors.ForeignKeyViolation;
                         }
                     },
@@ -2083,6 +2143,13 @@ pub const VM = struct {
                     },
                     .restrict => {
                         if (try self.has_referencing_rows(child_table, col_idx, old_val)) {
+                            self.error_context = .{
+                                .error_type = .foreign_key_restrict,
+                                .table_name = parent_table.schema.table_name,
+                                .column_name = fk.ref_column,
+                                .ref_table = child_schema.table_name,
+                                .ref_column = col.name,
+                            };
                             return VmErrors.ForeignKeyViolation;
                         }
                     },

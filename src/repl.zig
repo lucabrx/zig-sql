@@ -72,8 +72,15 @@ pub const REPL = struct {
         try self.start();
         defer self.shutdown();
 
+        var stmt_buffer = std.ArrayList(u8){};
+        defer stmt_buffer.deinit(self.allocator);
+
         while (true) {
-            _ = try self.writer.write("zql> ");
+            if (stmt_buffer.items.len == 0) {
+                _ = try self.writer.write("zql> ");
+            } else {
+                _ = try self.writer.write("...> ");
+            }
             try self.writer.flush();
 
             const line = try self.reader.takeDelimiter('\n') orelse break;
@@ -81,17 +88,32 @@ pub const REPL = struct {
 
             if (trimmed.len == 0) continue;
 
-            if (std.mem.startsWith(u8, trimmed, ".")) {
+            if (stmt_buffer.items.len == 0 and std.mem.startsWith(u8, trimmed, ".")) {
                 const result = try self.execute_meta_command(trimmed);
                 try self.writer.flush();
                 if (result == .Exit) {
                     break;
                 }
-            } else {
-                self.execute_statement(trimmed) catch |err| {
+                continue;
+            }
+
+            if (trimmed.len > 0 and trimmed[trimmed.len - 1] == '\\') {
+                try stmt_buffer.appendSlice(self.allocator, trimmed[0 .. trimmed.len - 1]);
+                try stmt_buffer.append(self.allocator, ' ');
+                continue;
+            }
+
+            try stmt_buffer.appendSlice(self.allocator, trimmed);
+
+            if (std.mem.endsWith(u8, trimmed, ";")) {
+                const full_stmt = stmt_buffer.items;
+                self.execute_statement(full_stmt) catch |err| {
                     try self.writer.print("Error: {s}\n", .{@errorName(err)});
                 };
                 try self.writer.flush();
+                stmt_buffer.clearRetainingCapacity();
+            } else {
+                try stmt_buffer.append(self.allocator, ' ');
             }
         }
     }
@@ -99,18 +121,23 @@ pub const REPL = struct {
     fn print_help(self: *REPL) !void {
         _ = try self.writer.writeAll(
             \\Meta commands:
-            \\ .exit       - Exit this program
-            \\ .help       - Show this help message
-            \\ .tables     - List all tables
-            \\ .indexes    - List all indexes
-            \\ .schema T   - Show schema for table T
-            \\ .views      - List all views
-            \\ .stats      - Toggle query timing
-            \\ .table      - Toggle table format output
-            \\ .debug      - Toggle debug mode
-            \\ .checkpoint - Force WAL checkpoint
-            \\ .sync       - Sync all pages to disk
-            \\ .cache      - Show cache statistics
+            \\ .exit         - Exit this program
+            \\ .help         - Show this help message
+            \\ .tables       - List all tables
+            \\ .indexes      - List all indexes
+            \\ .schema T     - Show schema for table T
+            \\ .views        - List all views
+            \\ .stats        - Toggle query timing
+            \\ .table        - Toggle table format output
+            \\ .debug        - Toggle debug mode
+            \\ .dump         - Export database as SQL
+            \\ .read FILE    - Execute SQL from file
+            \\ .import T F   - Import CSV file F into table T
+            \\ .checkpoint   - Force WAL checkpoint
+            \\ .sync         - Sync all pages to disk
+            \\ .cache        - Show cache statistics
+            \\
+            \\Multi-line: End statement with ; or use \ to continue
             \\
         );
     }
@@ -119,6 +146,29 @@ pub const REPL = struct {
         if (std.mem.startsWith(u8, cmd, ".schema ")) {
             const table_name = std.mem.trim(u8, cmd[8..], " ");
             try self.show_schema(table_name);
+            return .Success;
+        }
+
+        if (std.mem.startsWith(u8, cmd, ".read ")) {
+            const filename = std.mem.trim(u8, cmd[6..], " ");
+            try self.execute_file(filename);
+            return .Success;
+        }
+
+        if (std.mem.startsWith(u8, cmd, ".import ")) {
+            const args = std.mem.trim(u8, cmd[8..], " ");
+            var iter = std.mem.splitScalar(u8, args, ' ');
+            const table_name = iter.next() orelse {
+                try self.writer.writeAll("Usage: .import TABLE FILE\n");
+                return .Success;
+            };
+            const rest = iter.rest();
+            const filename = std.mem.trim(u8, rest, " ");
+            if (filename.len == 0) {
+                try self.writer.writeAll("Usage: .import TABLE FILE\n");
+                return .Success;
+            }
+            try self.import_csv(table_name, filename);
             return .Success;
         }
 
@@ -131,6 +181,7 @@ pub const REPL = struct {
             debug,
             stats,
             table,
+            dump,
             checkpoint,
             sync,
             cache,
@@ -193,6 +244,10 @@ pub const REPL = struct {
             .table => {
                 self.table_mode = !self.table_mode;
                 try self.writer.print("Table format: {s}\n", .{if (self.table_mode) "ON" else "OFF"});
+                return .Success;
+            },
+            .dump => {
+                try self.dump_database();
                 return .Success;
             },
             .cache => {
@@ -295,6 +350,250 @@ pub const REPL = struct {
         try self.writer.print("  Ratio:  {d:.1}%\n", .{stats.ratio * 100});
     }
 
+    fn dump_database(self: *REPL) !void {
+        const db = self.db orelse return;
+
+        try self.writer.writeAll("-- ZQL Database Dump\n");
+        try self.writer.writeAll("BEGIN TRANSACTION;\n\n");
+
+        const tables = db.list_tables() catch return;
+        defer self.allocator.free(tables);
+
+        for (tables) |table_name| {
+            const table = db.get_table(table_name) catch continue;
+            const schema = table.schema;
+
+            try self.writer.print("CREATE TABLE {s} (\n", .{table_name});
+            for (schema.columns, 0..) |col, i| {
+                try self.writer.print("  {s} {s}", .{ col.name, @tagName(col.type) });
+                if (col.primary_key) try self.writer.writeAll(" PRIMARY KEY");
+                if (col.not_null) try self.writer.writeAll(" NOT NULL");
+                if (col.unique) try self.writer.writeAll(" UNIQUE");
+                if (i < schema.columns.len - 1) {
+                    try self.writer.writeAll(",\n");
+                } else {
+                    try self.writer.writeAll("\n");
+                }
+            }
+            try self.writer.writeAll(");\n\n");
+
+            var cursor = table.select_all() catch continue;
+            while (!cursor.is_end()) {
+                const page = db.pager.get_page(cursor.page_num) catch break;
+                try self.writer.print("INSERT INTO {s} VALUES (", .{table_name});
+
+                for (schema.columns, 0..) |col, col_idx| {
+                    _ = col; // autofix
+                    if (col_idx > 0) try self.writer.writeAll(", ");
+                    const val = @import("storage/row.zig").get_value_from_page(page, cursor.cell_num, schema, col_idx);
+                    switch (val) {
+                        .integer => |v| try self.writer.print("{d}", .{v}),
+                        .real => |v| try self.writer.print("{d}", .{v}),
+                        .text => |v| try self.writer.print("'{s}'", .{v}),
+                        .boolean => |v| try self.writer.print("{s}", .{if (v) "TRUE" else "FALSE"}),
+                        .null_val => try self.writer.writeAll("NULL"),
+                        else => try self.writer.writeAll("NULL"),
+                    }
+                }
+                try self.writer.writeAll(");\n");
+                cursor.advance() catch break;
+            }
+            try self.writer.writeAll("\n");
+        }
+
+        try self.writer.writeAll("COMMIT;\n");
+    }
+
+    fn execute_file(self: *REPL, filename: []const u8) !void {
+        const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+            try self.writer.print("Error opening file '{s}': {s}\n", .{ filename, @errorName(err) });
+            return;
+        };
+        defer file.close();
+
+        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch |err| {
+            try self.writer.print("Error reading file: {s}\n", .{@errorName(err)});
+            return;
+        };
+        defer self.allocator.free(content);
+
+        var stmt_start: usize = 0;
+        var i: usize = 0;
+        var in_string = false;
+
+        while (i < content.len) : (i += 1) {
+            if (content[i] == '\'' and (i == 0 or content[i - 1] != '\\')) {
+                in_string = !in_string;
+            }
+            if (!in_string and content[i] == ';') {
+                const stmt = std.mem.trim(u8, content[stmt_start .. i + 1], " \t\n\r");
+                if (stmt.len > 0) {
+                    self.execute_statement(stmt) catch |err| {
+                        try self.writer.print("Error: {s}\n", .{@errorName(err)});
+                    };
+                }
+                stmt_start = i + 1;
+            }
+        }
+
+        if (stmt_start < content.len) {
+            const stmt = std.mem.trim(u8, content[stmt_start..], " \t\n\r");
+            if (stmt.len > 0) {
+                self.execute_statement(stmt) catch |err| {
+                    try self.writer.print("Error: {s}\n", .{@errorName(err)});
+                };
+            }
+        }
+
+        try self.writer.print("Executed file: {s}\n", .{filename});
+    }
+
+    fn import_csv(self: *REPL, table_name: []const u8, filename: []const u8) !void {
+        const db = self.db orelse return;
+
+        _ = db.get_table(table_name) catch {
+            try self.writer.print("Table '{s}' not found.\n", .{table_name});
+            return;
+        };
+
+        const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+            try self.writer.print("Error opening file '{s}': {s}\n", .{ filename, @errorName(err) });
+            return;
+        };
+        defer file.close();
+
+        const content = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch |err| {
+            try self.writer.print("Error reading file: {s}\n", .{@errorName(err)});
+            return;
+        };
+        defer self.allocator.free(content);
+
+        var row_count: usize = 0;
+        var error_count: usize = 0;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        var header_cols: ?[][]const u8 = null;
+        defer if (header_cols) |cols| self.allocator.free(cols);
+
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trimRight(u8, line, "\r");
+            if (trimmed.len == 0) continue;
+
+            const fields = self.parse_csv_line(trimmed) catch |err| {
+                try self.writer.print("CSV parse error: {s}\n", .{@errorName(err)});
+                error_count += 1;
+                continue;
+            };
+            defer self.allocator.free(fields);
+
+            if (header_cols == null) {
+                header_cols = try self.allocator.alloc([]const u8, fields.len);
+                for (fields, 0..) |f, i| {
+                    header_cols.?[i] = f;
+                }
+                continue;
+            }
+
+            var sql = std.ArrayList(u8){};
+            defer sql.deinit(self.allocator);
+
+            try sql.appendSlice(self.allocator, "INSERT INTO ");
+            try sql.appendSlice(self.allocator, table_name);
+            try sql.appendSlice(self.allocator, " (");
+
+            for (header_cols.?, 0..) |col, i| {
+                if (i > 0) try sql.appendSlice(self.allocator, ", ");
+                try sql.appendSlice(self.allocator, col);
+            }
+
+            try sql.appendSlice(self.allocator, ") VALUES (");
+
+            for (fields, 0..) |field, i| {
+                if (i > 0) try sql.appendSlice(self.allocator, ", ");
+                if (field.len == 0 or std.mem.eql(u8, field, "NULL")) {
+                    try sql.appendSlice(self.allocator, "NULL");
+                } else if (self.is_numeric(field)) {
+                    try sql.appendSlice(self.allocator, field);
+                } else {
+                    try sql.append(self.allocator, '\'');
+                    for (field) |c| {
+                        if (c == '\'') {
+                            try sql.appendSlice(self.allocator, "''");
+                        } else {
+                            try sql.append(self.allocator, c);
+                        }
+                    }
+                    try sql.append(self.allocator, '\'');
+                }
+            }
+
+            try sql.appendSlice(self.allocator, ");");
+
+            self.execute_statement(sql.items) catch {
+                error_count += 1;
+                continue;
+            };
+            row_count += 1;
+        }
+
+        try self.writer.print("Imported {d} rows from '{s}' into '{s}'", .{ row_count, filename, table_name });
+        if (error_count > 0) {
+            try self.writer.print(" ({d} errors)", .{error_count});
+        }
+        try self.writer.writeAll("\n");
+    }
+
+    fn parse_csv_line(self: *REPL, line: []const u8) ![][]const u8 {
+        var fields = std.ArrayList([]const u8){};
+        errdefer fields.deinit(self.allocator);
+
+        var i: usize = 0;
+        while (i < line.len) {
+            if (line[i] == '"') {
+                i += 1;
+                const field_start = i;
+                while (i < line.len) {
+                    if (line[i] == '"') {
+                        if (i + 1 < line.len and line[i + 1] == '"') {
+                            i += 2;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                try fields.append(self.allocator, line[field_start..i]);
+                if (i < line.len) i += 1;
+                if (i < line.len and line[i] == ',') i += 1;
+            } else {
+                const field_start = i;
+                while (i < line.len and line[i] != ',') : (i += 1) {}
+                try fields.append(self.allocator, line[field_start..i]);
+                if (i < line.len) i += 1;
+            }
+        }
+
+        return fields.toOwnedSlice(self.allocator);
+    }
+
+    fn is_numeric(self: *REPL, s: []const u8) bool {
+        _ = self;
+        if (s.len == 0) return false;
+        var has_dot = false;
+        var idx: usize = 0;
+        if (s[0] == '-' or s[0] == '+') idx = 1;
+        if (idx >= s.len) return false;
+        for (s[idx..]) |c| {
+            if (c == '.') {
+                if (has_dot) return false;
+                has_dot = true;
+            } else if (c < '0' or c > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
     fn execute_statement(self: *REPL, input: []const u8) !void {
         const db = self.db orelse return error.DatabaseNotInitialized;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -361,7 +660,19 @@ pub const REPL = struct {
 
         vm.load(instructions);
         vm.run() catch |err| {
-            try self.writer.print("Runtime error: {s}\n", .{@errorName(err)});
+            const is_constraint_err = (err == error.NullConstraintViolation or
+                err == error.TypeMismatch or
+                err == error.CheckConstraintViolation or
+                err == error.UniqueConstraintViolation or
+                err == error.ForeignKeyViolation);
+
+            if (is_constraint_err) {
+                const msg = vm.get_error_message() catch @errorName(err);
+                defer if (is_constraint_err) self.allocator.free(msg);
+                try self.writer.print("Error: {s}\n", .{msg});
+            } else {
+                try self.writer.print("Runtime error: {s}\n", .{@errorName(err)});
+            }
             return;
         };
 
