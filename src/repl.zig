@@ -6,11 +6,91 @@ const ast = @import("parser/ast.zig");
 const Compiler = @import("compiler/compiler.zig").Compiler;
 const VM = @import("vm/vm.zig").VM;
 const RegisterValue = @import("vm/vm.zig").RegisterValue;
+const Instruction = @import("vm/opcode.zig").Instruction;
 const Pager = @import("storage/pager.zig").Pager;
 const Database = @import("storage/table.zig").Database;
 const posix = std.posix;
 
 const HISTORY_SIZE = 100;
+const STMT_CACHE_SIZE = 64;
+
+const CachedStatement = struct {
+    sql_hash: u64,
+    instructions: []Instruction,
+    strings: [][]const u8,
+};
+
+const StmtCache = struct {
+    entries: [STMT_CACHE_SIZE]?CachedStatement,
+    allocator: std.mem.Allocator,
+    hits: u64,
+    misses: u64,
+
+    fn init(allocator: std.mem.Allocator) StmtCache {
+        return .{
+            .entries = [_]?CachedStatement{null} ** STMT_CACHE_SIZE,
+            .allocator = allocator,
+            .hits = 0,
+            .misses = 0,
+        };
+    }
+
+    fn deinit(self: *StmtCache) void {
+        for (&self.entries) |*entry| {
+            if (entry.*) |cached| {
+                for (cached.strings) |s| {
+                    self.allocator.free(s);
+                }
+                self.allocator.free(cached.strings);
+                self.allocator.free(cached.instructions);
+            }
+            entry.* = null;
+        }
+    }
+
+    fn get(self: *StmtCache, sql: []const u8) ?[]const Instruction {
+        const hash = std.hash.Wyhash.hash(0, sql);
+        const idx = hash % STMT_CACHE_SIZE;
+        if (self.entries[idx]) |cached| {
+            if (cached.sql_hash == hash) {
+                self.hits += 1;
+                return cached.instructions;
+            }
+        }
+        self.misses += 1;
+        return null;
+    }
+
+    fn put(self: *StmtCache, sql: []const u8, instructions: []const Instruction) !void {
+        const hash = std.hash.Wyhash.hash(0, sql);
+        const idx = hash % STMT_CACHE_SIZE;
+
+        if (self.entries[idx]) |old| {
+            for (old.strings) |s| {
+                self.allocator.free(s);
+            }
+            self.allocator.free(old.strings);
+            self.allocator.free(old.instructions);
+        }
+
+        var strings = std.ArrayList([]const u8){};
+        const new_insts = try self.allocator.alloc(Instruction, instructions.len);
+        for (instructions, 0..) |inst, i| {
+            new_insts[i] = inst;
+            if (inst.p4.len > 0) {
+                const owned = try self.allocator.dupe(u8, inst.p4);
+                try strings.append(self.allocator, owned);
+                new_insts[i].p4 = owned;
+            }
+        }
+
+        self.entries[idx] = .{
+            .sql_hash = hash,
+            .instructions = new_insts,
+            .strings = try strings.toOwnedSlice(self.allocator),
+        };
+    }
+};
 
 const LineEditor = struct {
     allocator: std.mem.Allocator,
@@ -350,6 +430,7 @@ pub const REPL = struct {
     stats_mode: bool,
     table_mode: bool,
     line_editor: LineEditor,
+    stmt_cache: StmtCache,
 
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8, writer: *std.Io.Writer, reader: *std.Io.Reader) REPL {
         return REPL{
@@ -363,6 +444,7 @@ pub const REPL = struct {
             .stats_mode = false,
             .table_mode = false,
             .line_editor = LineEditor.init(allocator),
+            .stmt_cache = StmtCache.init(allocator),
         };
     }
 
@@ -382,6 +464,7 @@ pub const REPL = struct {
     }
 
     pub fn shutdown(self: *REPL) void {
+        self.stmt_cache.deinit();
         self.line_editor.deinit();
         if (self.db) |db| {
             db.close();
@@ -671,10 +754,17 @@ pub const REPL = struct {
     fn show_cache_stats(self: *REPL) !void {
         const pager = self.pager orelse return;
         const stats = pager.get_cache_stats();
-        try self.writer.print("Cache Statistics:\n", .{});
+        try self.writer.print("Page Cache:\n", .{});
         try self.writer.print("  Hits:   {d}\n", .{stats.hits});
         try self.writer.print("  Misses: {d}\n", .{stats.misses});
         try self.writer.print("  Ratio:  {d:.1}%\n", .{stats.ratio * 100});
+
+        const total = self.stmt_cache.hits + self.stmt_cache.misses;
+        const ratio: f64 = if (total > 0) @as(f64, @floatFromInt(self.stmt_cache.hits)) / @as(f64, @floatFromInt(total)) else 0;
+        try self.writer.print("Statement Cache:\n", .{});
+        try self.writer.print("  Hits:   {d}\n", .{self.stmt_cache.hits});
+        try self.writer.print("  Misses: {d}\n", .{self.stmt_cache.misses});
+        try self.writer.print("  Ratio:  {d:.1}%\n", .{ratio * 100});
     }
 
     fn dump_database(self: *REPL) !void {
@@ -923,11 +1013,38 @@ pub const REPL = struct {
 
     fn execute_statement(self: *REPL, input: []const u8) !void {
         const db = self.db orelse return error.DatabaseNotInitialized;
+
+        const start_time = if (self.stats_mode) std.time.nanoTimestamp() else 0;
+
+        const is_select = std.ascii.startsWithIgnoreCase(input, "select");
+
+        if (is_select and !self.debug_mode) {
+            if (self.stmt_cache.get(input)) |cached_insts| {
+                var vm = VM.init(self.allocator, db);
+                vm.set_debug(false);
+                defer vm.deinit();
+                vm.load(cached_insts);
+                vm.run() catch |err| {
+                    try self.writer.print("Runtime error: {s}\n", .{@errorName(err)});
+                    return;
+                };
+                const results = vm.get_results();
+                if (results.len > 0) {
+                    try self.print_results(results);
+                }
+                if (self.stats_mode) {
+                    const end_time = std.time.nanoTimestamp();
+                    const elapsed_ns = end_time - start_time;
+                    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+                    try self.writer.print("Time: {d:.3}ms (cached)\n", .{elapsed_ms});
+                }
+                return;
+            }
+        }
+
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const temp_allocator = arena.allocator();
-
-        const start_time = if (self.stats_mode) std.time.nanoTimestamp() else 0;
 
         var l = lexer.Lexer.init(input);
         const tokens = try l.tokenize(temp_allocator);
@@ -975,6 +1092,10 @@ pub const REPL = struct {
             try self.writer.print("Compile error: {s}\n", .{@errorName(err)});
             return;
         };
+
+        if (is_select and !self.debug_mode) {
+            self.stmt_cache.put(input, instructions) catch {};
+        }
 
         if (self.debug_mode) {
             try self.writer.writeAll("[DEBUG] Bytecode:\n");

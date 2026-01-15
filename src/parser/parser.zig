@@ -119,6 +119,43 @@ pub const Parser = struct {
         return false;
     }
 
+    pub fn synchronize(self: *Parser) void {
+        self.advance();
+        while (self.current.type != token.TokenType.eof) {
+            if (self.tokens[if (self.pos > 0) self.pos - 1 else 0].type == token.TokenType.semicolon) {
+                return;
+            }
+            switch (self.current.type) {
+                .select, .insert, .update, .delete, .create, .drop, .alter, .begin, .commit, .rollback, .vacuum => return,
+                else => self.advance(),
+            }
+        }
+    }
+
+    pub fn parseMultiple(self: *Parser) ![]ast.Statement {
+        var statements = std.ArrayList(ast.Statement){};
+
+        while (self.current.type != token.TokenType.eof) {
+            if (self.current.type == token.TokenType.semicolon) {
+                self.advance();
+                continue;
+            }
+
+            const stmt = self.parse() catch |err| {
+                if (err == error.OutOfMemory) return err;
+                self.synchronize();
+                continue;
+            };
+            try statements.append(self.allocator, stmt);
+
+            if (self.current.type == token.TokenType.semicolon) {
+                self.advance();
+            }
+        }
+
+        return try statements.toOwnedSlice(self.allocator);
+    }
+
     pub fn parse(self: *Parser) ParseError!ast.Statement {
         switch (self.current.type) {
             token.TokenType.create => {

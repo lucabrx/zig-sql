@@ -201,7 +201,31 @@ pub const VM = struct {
             if (self.debug) {
                 print("[VM] PC={d}: {s}\n", .{ self.pc, inst.op.to_string() });
             }
-            try self.execute(inst);
+            switch (inst.op) {
+                .init => self.pc += 1,
+                .halt => self.halted = true,
+                .goto => self.pc = @intCast(inst.p2),
+                .if_zero => {
+                    if (self.registers[@intCast(inst.p1)].integer == 0) {
+                        self.pc = @intCast(inst.p2);
+                    } else {
+                        self.pc += 1;
+                    }
+                },
+                .integer => {
+                    self.registers[@intCast(inst.p1)] = RegisterValue.init_integer(@intCast(inst.p2));
+                    self.pc += 1;
+                },
+                .string => {
+                    self.registers[@intCast(inst.p1)] = RegisterValue.init_text(inst.p4);
+                    self.pc += 1;
+                },
+                .null => {
+                    self.registers[@intCast(inst.p1)] = RegisterValue.init_null();
+                    self.pc += 1;
+                },
+                else => try self.execute(inst),
+            }
         }
     }
 
