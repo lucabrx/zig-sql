@@ -241,3 +241,90 @@ test "DISTINCT" {
 
     try std.testing.expectEqual(@as(usize, 2), result.len);
 }
+
+test "stress test: many inserts" {
+    const allocator = std.testing.allocator;
+    var pager = try Pager.init(allocator, ":memory:");
+    defer pager.deinit();
+    var db = try Database.init(allocator, &pager);
+    defer db.close();
+
+    _ = try execute_sql(allocator, &db, "CREATE TABLE stress (id INTEGER PRIMARY KEY, val INTEGER);");
+
+    var buf: [128]u8 = undefined;
+    for (1..16) |i| {
+        const sql = try std.fmt.bufPrint(&buf, "INSERT INTO stress VALUES ({d}, {d});", .{ i, i * 10 });
+        _ = try execute_sql(allocator, &db, sql);
+    }
+
+    const result = try execute_sql(allocator, &db, "SELECT COUNT(*) FROM stress;");
+    defer free_results(allocator, result);
+
+    try std.testing.expectEqual(@as(i64, 15), result[0][0].integer);
+}
+
+test "stress test: many deletes" {
+    const allocator = std.testing.allocator;
+    var pager = try Pager.init(allocator, ":memory:");
+    defer pager.deinit();
+    var db = try Database.init(allocator, &pager);
+    defer db.close();
+
+    _ = try execute_sql(allocator, &db, "CREATE TABLE stress (id INTEGER PRIMARY KEY, val INTEGER);");
+
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (1, 10);");
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (2, 20);");
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (3, 30);");
+
+    _ = try execute_sql(allocator, &db, "DELETE FROM stress WHERE id = 1;");
+
+    const result = try execute_sql(allocator, &db, "SELECT COUNT(*) FROM stress;");
+    defer free_results(allocator, result);
+
+    try std.testing.expectEqual(@as(i64, 2), result[0][0].integer);
+}
+
+test "stress test: interleaved insert delete" {
+    const allocator = std.testing.allocator;
+    var pager = try Pager.init(allocator, ":memory:");
+    defer pager.deinit();
+    var db = try Database.init(allocator, &pager);
+    defer db.close();
+
+    _ = try execute_sql(allocator, &db, "CREATE TABLE stress (id INTEGER PRIMARY KEY, val INTEGER);");
+
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (1, 10);");
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (2, 20);");
+    _ = try execute_sql(allocator, &db, "DELETE FROM stress WHERE id = 1;");
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (3, 30);");
+
+    const result = try execute_sql(allocator, &db, "SELECT COUNT(*) FROM stress;");
+    defer free_results(allocator, result);
+
+    try std.testing.expectEqual(@as(i64, 2), result[0][0].integer);
+}
+
+test "stress test: updates" {
+    const allocator = std.testing.allocator;
+    var pager = try Pager.init(allocator, ":memory:");
+    defer pager.deinit();
+    var db = try Database.init(allocator, &pager);
+    defer db.close();
+
+    _ = try execute_sql(allocator, &db, "CREATE TABLE stress (id INTEGER PRIMARY KEY, val INTEGER);");
+
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (1, 0);");
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (2, 0);");
+    _ = try execute_sql(allocator, &db, "INSERT INTO stress VALUES (3, 0);");
+
+    _ = try execute_sql(allocator, &db, "UPDATE stress SET val = 100 WHERE id = 1;");
+    _ = try execute_sql(allocator, &db, "UPDATE stress SET val = 200 WHERE id = 2;");
+    _ = try execute_sql(allocator, &db, "UPDATE stress SET val = 300 WHERE id = 3;");
+
+    const result = try execute_sql(allocator, &db, "SELECT SUM(val) FROM stress;");
+    defer free_results(allocator, result);
+
+    const val = result[0][0];
+    const sum_val: i64 = if (val.type == .integer) val.integer else @intFromFloat(val.real);
+    try std.testing.expectEqual(@as(i64, 600), sum_val);
+}

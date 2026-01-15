@@ -169,6 +169,16 @@ pub const Btree = struct {
         const old_max = node.get_num_cells(old_page);
         const split_point = (old_max + 1) / 2;
 
+        var cells: [16][row.LEAF_CELL_SIZE]u8 = undefined;
+
+        var j: u32 = 0;
+        while (j < old_max) : (j += 1) {
+            const src_offset = row.leaf_cell_offset(j);
+            for (0..row.LEAF_CELL_SIZE) |b| {
+                cells[j][b] = old_page.data[src_offset + b];
+            }
+        }
+
         var i: u32 = 0;
         while (i <= old_max) : (i += 1) {
             var dest_page: *Page = undefined;
@@ -191,14 +201,10 @@ pub const Btree = struct {
                     src_cell = i - 1;
                 }
                 if (src_cell < old_max) {
-                    const src_key = row.get_leaf_key(old_page, src_cell);
-                    const src_offset = row.leaf_cell_offset(src_cell) + row.LEAF_KEY_SIZE;
-                    const dest_offset = row.leaf_cell_offset(dest_cell) + row.LEAF_KEY_SIZE;
-                    @memcpy(
-                        dest_page.data[dest_offset .. dest_offset + row.LEAF_VALUE_SIZE],
-                        old_page.data[src_offset .. src_offset + row.LEAF_VALUE_SIZE],
-                    );
-                    row.set_leaf_key(dest_page, dest_cell, src_key);
+                    const dest_offset = row.leaf_cell_offset(dest_cell);
+                    for (0..row.LEAF_CELL_SIZE) |b| {
+                        dest_page.data[dest_offset + b] = cells[src_cell][b];
+                    }
                 }
             }
         }
@@ -213,11 +219,44 @@ pub const Btree = struct {
 
         if (node.is_node_root(old_page)) {
             try self.create_new_root(new_page_num);
+        } else {
+            const parent_num = node.get_parent_pointer(old_page);
+            node.set_parent_pointer(new_page, parent_num);
+            const old_max_key = self.get_max_key(old_page);
+            try self.insert_into_parent(parent_num, old_max_key, new_page_num);
         }
 
         self.pager.mark_dirty(cursor.page_num);
         self.pager.mark_dirty(new_page_num);
         debugPrint("[BTREE] Split leaf, new page {}\n", .{new_page_num});
+    }
+
+    fn insert_into_parent(self: *Btree, parent_num: u32, key: u32, right_child: u32) !void {
+        const parent = try self.pager.get_page(parent_num);
+        const num_cells = node.get_num_cells(parent);
+
+        var insert_idx: u32 = 0;
+        while (insert_idx < num_cells) : (insert_idx += 1) {
+            if (key < node.get_internal_key(parent, insert_idx)) break;
+        }
+
+        if (insert_idx == num_cells) {
+            const old_right = node.get_right_child(parent);
+            node.set_internal_child(parent, num_cells, old_right);
+            node.set_internal_key(parent, num_cells, key);
+            node.set_right_child(parent, right_child);
+        } else {
+            var i: u32 = num_cells;
+            while (i > insert_idx) : (i -= 1) {
+                node.set_internal_child(parent, i, node.get_internal_child(parent, i - 1));
+                node.set_internal_key(parent, i, node.get_internal_key(parent, i - 1));
+            }
+            node.set_internal_child(parent, insert_idx, node.get_internal_child(parent, insert_idx));
+            node.set_internal_key(parent, insert_idx, key);
+        }
+
+        node.set_num_cells(parent, num_cells + 1);
+        self.pager.mark_dirty(parent_num);
     }
 
     fn create_new_root(self: *Btree, right_child_page_num: u32) !void {

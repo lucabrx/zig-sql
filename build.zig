@@ -63,4 +63,17 @@ pub fn build(b: *std.Build) void {
     const run_benchmark = b.addRunArtifact(benchmark);
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&run_benchmark.step);
+
+    const fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+
+    const fuzz_step = b.step("fuzz", "Run parser fuzz tests");
+    fuzz_step.dependOn(&run_fuzz_tests.step);
 }
