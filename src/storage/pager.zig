@@ -1,6 +1,7 @@
 const std = @import("std");
 const fs = std.fs;
 const builtin = @import("builtin");
+const posix = std.posix;
 
 const DEBUG = builtin.mode == .Debug;
 
@@ -16,6 +17,8 @@ pub const CACHE_SIZE: usize = 32;
 const CHECKSUM_OFFSET: usize = PAGE_SIZE - 4;
 const FREE_LIST_PAGE: u32 = 0;
 const FREE_LIST_HEADER_SIZE: usize = 8;
+const MMAP_ALIGN: usize = 16384;
+const MMAP_THRESHOLD: u64 = 64 * 1024;
 
 pub const Page = struct {
     data: [PAGE_SIZE]u8,
@@ -29,10 +32,8 @@ pub const Page = struct {
     }
 };
 
-const CacheEntry = struct {
-    page: *Page,
-    page_num: u32,
-    access_count: u64,
+const MmapPage = struct {
+    dirty: bool,
 };
 
 fn compute_checksum(data: []const u8) u32 {
@@ -60,6 +61,7 @@ pub const PagerError = error{
     IncompleteRead,
     PageCorrupted,
     NoFreePages,
+    MmapFailed,
 };
 
 pub const Pager = struct {
@@ -74,6 +76,10 @@ pub const Pager = struct {
     cache_hits: u64,
     cache_misses: u64,
     free_pages: std.ArrayList(u32),
+    mmap_data: ?[]align(MMAP_ALIGN) u8,
+    mmap_size: usize,
+    mmap_pages: [MAX_PAGES]?MmapPage,
+    use_mmap: bool,
 
     pub fn init(allocator: std.mem.Allocator, filename: []const u8) !Pager {
         return initWithOptions(allocator, filename, true);
@@ -82,6 +88,9 @@ pub const Pager = struct {
     pub fn initWithOptions(allocator: std.mem.Allocator, filename: []const u8, use_checksums: bool) !Pager {
         var pages: [MAX_PAGES]?*Page = undefined;
         @memset(&pages, null);
+
+        var mmap_pages: [MAX_PAGES]?MmapPage = undefined;
+        @memset(&mmap_pages, null);
 
         if (std.mem.eql(u8, filename, ":memory:")) {
             return Pager{
@@ -96,6 +105,10 @@ pub const Pager = struct {
                 .cache_hits = 0,
                 .cache_misses = 0,
                 .free_pages = std.ArrayList(u32){},
+                .mmap_data = null,
+                .mmap_size = 0,
+                .mmap_pages = mmap_pages,
+                .use_mmap = false,
             };
         }
 
@@ -108,8 +121,31 @@ pub const Pager = struct {
         }
 
         const num_pages = @as(u32, @intCast(file_len / PAGE_SIZE));
+        const use_mmap = file_len >= MMAP_THRESHOLD and builtin.os.tag != .windows;
 
-        debugPrint("[PAGER] Opened database: {s} ({} pages)\n", .{ filename, num_pages });
+        var mmap_data: ?[]align(MMAP_ALIGN) u8 = null;
+        var mmap_size: usize = 0;
+
+        if (use_mmap and file_len > 0) {
+            const map_size = @as(usize, @intCast(file_len));
+            mmap_data = posix.mmap(
+                null,
+                map_size,
+                posix.PROT.READ | posix.PROT.WRITE,
+                .{ .TYPE = .SHARED },
+                file.handle,
+                0,
+            ) catch |err| blk: {
+                debugPrint("[PAGER] mmap failed: {}, falling back to regular I/O\n", .{err});
+                break :blk null;
+            };
+            if (mmap_data != null) {
+                mmap_size = map_size;
+                debugPrint("[PAGER] Memory-mapped {} bytes\n", .{map_size});
+            }
+        }
+
+        debugPrint("[PAGER] Opened database: {s} ({} pages, mmap={})\n", .{ filename, num_pages, mmap_data != null });
 
         var pager = Pager{
             .file = file,
@@ -123,6 +159,10 @@ pub const Pager = struct {
             .cache_hits = 0,
             .cache_misses = 0,
             .free_pages = std.ArrayList(u32){},
+            .mmap_data = mmap_data,
+            .mmap_size = mmap_size,
+            .mmap_pages = mmap_pages,
+            .use_mmap = mmap_data != null,
         };
 
         pager.load_free_list() catch {};
@@ -136,6 +176,16 @@ pub const Pager = struct {
         self.flush() catch |err| {
             debugPrint("[PAGER] Error flushing on close: {}\n", .{err});
         };
+
+        if (self.mmap_data) |data| {
+            if (self.use_mmap) {
+                const MS_SYNC: i32 = 0x0010;
+                posix.msync(data, MS_SYNC) catch {};
+            }
+            posix.munmap(data);
+            self.mmap_data = null;
+            debugPrint("[PAGER] Unmapped memory\n", .{});
+        }
 
         if (self.file) |f| {
             f.close();
@@ -189,6 +239,16 @@ pub const Pager = struct {
         }
     }
 
+    fn get_mmap_page_data(self: *Pager, page_num: u32) ?*[PAGE_SIZE]u8 {
+        if (self.mmap_data) |data| {
+            const offset = @as(usize, page_num) * PAGE_SIZE;
+            if (offset + PAGE_SIZE <= data.len) {
+                return @ptrCast(data[offset..][0..PAGE_SIZE]);
+            }
+        }
+        return null;
+    }
+
     pub fn get_page(self: *Pager, page_num: u32) !*Page {
         if (page_num >= MAX_PAGES) return error.PageOutOfBounds;
 
@@ -208,7 +268,20 @@ pub const Pager = struct {
         const page = try self.allocator.create(Page);
         page.* = Page.init();
 
-        if (!self.in_memory and page_num < self.num_pages) {
+        if (self.use_mmap) {
+            if (self.get_mmap_page_data(page_num)) |mmap_page| {
+                @memcpy(&page.data, mmap_page);
+                if (self.use_checksums and !verify_checksum(&page.data)) {
+                    debugPrint("[PAGER] ERROR: Page {} checksum mismatch - corrupted!\n", .{page_num});
+                    self.allocator.destroy(page);
+                    return error.PageCorrupted;
+                }
+                self.mmap_pages[page_num] = MmapPage{ .dirty = false };
+                debugPrint("[PAGER] Loaded page {} from mmap\n", .{page_num});
+            } else {
+                debugPrint("[PAGER] Allocated new page {} (beyond mmap)\n", .{page_num});
+            }
+        } else if (!self.in_memory and page_num < self.num_pages) {
             const offset = @as(u64, page_num) * PAGE_SIZE;
             if (self.file) |f| {
                 try f.seekTo(offset);
@@ -258,6 +331,8 @@ pub const Pager = struct {
             self.allocator.destroy(p);
             self.pages[page_num] = null;
         }
+
+        self.mmap_pages[page_num] = null;
 
         try self.free_pages.append(self.allocator, page_num);
         debugPrint("[PAGER] Freed page {}\n", .{page_num});
@@ -313,6 +388,16 @@ pub const Pager = struct {
             write_checksum(&page.data);
         }
 
+        if (self.use_mmap) {
+            if (self.get_mmap_page_data(page_num)) |mmap_page| {
+                @memcpy(mmap_page, &page.data);
+                self.mmap_pages[page_num] = MmapPage{ .dirty = true };
+                page.dirty = false;
+                debugPrint("[PAGER] Flushed page {} to mmap\n", .{page_num});
+                return;
+            }
+        }
+
         const offset = @as(u64, page_num) * PAGE_SIZE;
         if (self.file) |f| {
             try f.seekTo(offset);
@@ -338,7 +423,16 @@ pub const Pager = struct {
     pub fn sync(self: *Pager) !void {
         if (self.in_memory) return;
         try self.flush();
-        if (self.file) |f| {
+
+        if (self.use_mmap) {
+            if (self.mmap_data) |data| {
+                const MS_SYNC: i32 = 0x0010;
+                posix.msync(data, MS_SYNC) catch |err| {
+                    debugPrint("[PAGER] msync failed: {}\n", .{err});
+                };
+                debugPrint("[PAGER] Synced mmap to disk\n", .{});
+            }
+        } else if (self.file) |f| {
             try f.sync();
             debugPrint("[PAGER] Synced to disk\n", .{});
         }
@@ -348,6 +442,9 @@ pub const Pager = struct {
         if (page_num < MAX_PAGES) {
             if (self.pages[page_num]) |p| {
                 p.dirty = true;
+            }
+            if (self.mmap_pages[page_num]) |_| {
+                self.mmap_pages[page_num] = MmapPage{ .dirty = true };
             }
         }
     }
@@ -362,8 +459,16 @@ pub const Pager = struct {
         return self.free_pages.items.len;
     }
 
+    pub fn is_mmap_enabled(self: *Pager) bool {
+        return self.use_mmap;
+    }
+
+    pub fn get_mmap_size(self: *Pager) usize {
+        return self.mmap_size;
+    }
+
     pub fn debug_print_status(self: *Pager) void {
-        debugPrint("[PAGER] Status: {} pages, in_memory={}\n", .{ self.num_pages, self.in_memory });
+        debugPrint("[PAGER] Status: {} pages, in_memory={}, mmap={}\n", .{ self.num_pages, self.in_memory, self.use_mmap });
         var loaded: u32 = 0;
         var dirty: u32 = 0;
         for (0..MAX_PAGES) |i| {
@@ -376,6 +481,9 @@ pub const Pager = struct {
         const stats = self.get_cache_stats();
         debugPrint("[PAGER] Cache hits: {}, misses: {}, ratio: {d:.2}%\n", .{ stats.hits, stats.misses, stats.ratio * 100 });
         debugPrint("[PAGER] Free pages: {}\n", .{self.free_pages.items.len});
+        if (self.use_mmap) {
+            debugPrint("[PAGER] Mmap size: {} bytes\n", .{self.mmap_size});
+        }
     }
 };
 
@@ -393,6 +501,7 @@ test "in-memory pager creation" {
     try std.testing.expect(pager.in_memory);
     try std.testing.expect(pager.file == null);
     try std.testing.expectEqual(0, pager.num_pages);
+    try std.testing.expect(!pager.use_mmap);
 }
 
 test "in-memory pager page allocation" {
@@ -446,4 +555,11 @@ test "checksum computation" {
     try std.testing.expect(verify_checksum(&data));
     data[50] = 1;
     try std.testing.expect(!verify_checksum(&data));
+}
+
+test "mmap status for in-memory" {
+    var pager = try Pager.init(std.testing.allocator, ":memory:");
+    defer pager.deinit();
+    try std.testing.expect(!pager.is_mmap_enabled());
+    try std.testing.expectEqual(@as(usize, 0), pager.get_mmap_size());
 }
