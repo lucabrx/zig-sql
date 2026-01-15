@@ -10,10 +10,15 @@ pub const PAGE_SIZE = @import("pager.zig").PAGE_SIZE;
 pub const MAX_ROW_SIZE: usize = 1024;
 pub const TEXT_MAX_SIZE: usize = 256;
 pub const BLOB_MAX_SIZE: usize = 512;
+pub const OVERFLOW_THRESHOLD: usize = 768;
+pub const OVERFLOW_PAGE_DATA_SIZE: usize = PAGE_SIZE - 8;
 
 pub const LEAF_KEY_SIZE: usize = 4;
 pub const LEAF_VALUE_SIZE: usize = MAX_ROW_SIZE;
 pub const LEAF_CELL_SIZE: usize = LEAF_KEY_SIZE + LEAF_VALUE_SIZE;
+
+pub const OVERFLOW_HEADER_SIZE: usize = 8;
+pub const OVERFLOW_MAGIC: u32 = 0x4F564652;
 
 const print = std.debug.print;
 
@@ -262,6 +267,98 @@ pub fn set_leaf_row(page: *Page, cell_num: u32, row: *const DynamicRow) void {
     set_leaf_value(page, cell_num, row.as_bytes());
 }
 
+pub const OverflowPage = struct {
+    pub fn init(page: *Page, next_page: u32) void {
+        std.mem.writeInt(u32, page.data[0..4], OVERFLOW_MAGIC, .little);
+        std.mem.writeInt(u32, page.data[4..8], next_page, .little);
+    }
+
+    pub fn is_overflow(page: *Page) bool {
+        const magic = std.mem.readInt(u32, page.data[0..4], .little);
+        return magic == OVERFLOW_MAGIC;
+    }
+
+    pub fn get_next_page(page: *Page) u32 {
+        return std.mem.readInt(u32, page.data[4..8], .little);
+    }
+
+    pub fn set_next_page(page: *Page, next: u32) void {
+        std.mem.writeInt(u32, page.data[4..8], next, .little);
+    }
+
+    pub fn get_data(page: *Page) []u8 {
+        return page.data[OVERFLOW_HEADER_SIZE..];
+    }
+
+    pub fn set_data(page: *Page, data: []const u8) void {
+        const len = @min(data.len, OVERFLOW_PAGE_DATA_SIZE);
+        @memcpy(page.data[OVERFLOW_HEADER_SIZE .. OVERFLOW_HEADER_SIZE + len], data[0..len]);
+    }
+};
+
+pub const OverflowRowHeader = struct {
+    has_overflow: bool,
+    overflow_page: u32,
+    inline_size: u32,
+
+    pub const SIZE: usize = 9;
+
+    pub fn write(self: OverflowRowHeader, dest: []u8) void {
+        dest[0] = if (self.has_overflow) 1 else 0;
+        std.mem.writeInt(u32, dest[1..5], self.overflow_page, .little);
+        std.mem.writeInt(u32, dest[5..9], self.inline_size, .little);
+    }
+
+    pub fn read(src: []const u8) OverflowRowHeader {
+        return OverflowRowHeader{
+            .has_overflow = src[0] != 0,
+            .overflow_page = std.mem.readInt(u32, src[1..5], .little),
+            .inline_size = std.mem.readInt(u32, src[5..9], .little),
+        };
+    }
+};
+
+pub const LargeRow = struct {
+    data: []u8,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, size: usize) !LargeRow {
+        const data = try allocator.alloc(u8, size);
+        @memset(data, 0);
+        return LargeRow{
+            .data = data,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *LargeRow) void {
+        self.allocator.free(self.data);
+    }
+
+    pub fn needs_overflow(size: usize) bool {
+        return size > OVERFLOW_THRESHOLD;
+    }
+
+    pub fn inline_portion_size(total_size: usize) usize {
+        if (total_size <= OVERFLOW_THRESHOLD) {
+            return total_size;
+        }
+        return OVERFLOW_THRESHOLD - OverflowRowHeader.SIZE;
+    }
+
+    pub fn overflow_size(total_size: usize) usize {
+        if (total_size <= OVERFLOW_THRESHOLD) {
+            return 0;
+        }
+        return total_size - inline_portion_size(total_size);
+    }
+
+    pub fn pages_needed(overflow_bytes: usize) usize {
+        if (overflow_bytes == 0) return 0;
+        return (overflow_bytes + OVERFLOW_PAGE_DATA_SIZE - 1) / OVERFLOW_PAGE_DATA_SIZE;
+    }
+};
+
 test "dynamic row serialize and deserialize" {
     var columns = [_]schema_mod.Column{
         .{ .name = "id", .type = .Integer, .primary_key = true, .not_null = true },
@@ -318,4 +415,45 @@ test "leaf cell key operations" {
 
     set_leaf_key(&page, 1, 200);
     try std.testing.expectEqual(@as(u32, 200), get_leaf_key(&page, 1));
+}
+
+test "overflow page initialization" {
+    var page = Page.init();
+    OverflowPage.init(&page, 42);
+
+    try std.testing.expect(OverflowPage.is_overflow(&page));
+    try std.testing.expectEqual(@as(u32, 42), OverflowPage.get_next_page(&page));
+}
+
+test "overflow row header" {
+    var buf: [OverflowRowHeader.SIZE]u8 = undefined;
+    const header = OverflowRowHeader{
+        .has_overflow = true,
+        .overflow_page = 123,
+        .inline_size = 500,
+    };
+    header.write(&buf);
+
+    const read_header = OverflowRowHeader.read(&buf);
+    try std.testing.expect(read_header.has_overflow);
+    try std.testing.expectEqual(@as(u32, 123), read_header.overflow_page);
+    try std.testing.expectEqual(@as(u32, 500), read_header.inline_size);
+}
+
+test "large row calculations" {
+    try std.testing.expect(!LargeRow.needs_overflow(500));
+    try std.testing.expect(LargeRow.needs_overflow(1000));
+
+    try std.testing.expectEqual(@as(usize, 500), LargeRow.inline_portion_size(500));
+    try std.testing.expectEqual(@as(usize, 0), LargeRow.overflow_size(500));
+
+    const large_size: usize = 5000;
+    const inline_size = LargeRow.inline_portion_size(large_size);
+    const overflow_bytes = LargeRow.overflow_size(large_size);
+    try std.testing.expectEqual(large_size, inline_size + overflow_bytes);
+
+    try std.testing.expectEqual(@as(usize, 0), LargeRow.pages_needed(0));
+    try std.testing.expectEqual(@as(usize, 1), LargeRow.pages_needed(100));
+    try std.testing.expectEqual(@as(usize, 1), LargeRow.pages_needed(OVERFLOW_PAGE_DATA_SIZE));
+    try std.testing.expectEqual(@as(usize, 2), LargeRow.pages_needed(OVERFLOW_PAGE_DATA_SIZE + 1));
 }

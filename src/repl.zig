@@ -24,6 +24,7 @@ pub const REPL = struct {
     db: ?*Database,
     debug_mode: bool,
     stats_mode: bool,
+    table_mode: bool,
 
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8, writer: *std.Io.Writer, reader: *std.Io.Reader) REPL {
         return REPL{
@@ -35,6 +36,7 @@ pub const REPL = struct {
             .db = null,
             .debug_mode = false,
             .stats_mode = false,
+            .table_mode = false,
         };
     }
 
@@ -104,6 +106,7 @@ pub const REPL = struct {
             \\ .schema T   - Show schema for table T
             \\ .views      - List all views
             \\ .stats      - Toggle query timing
+            \\ .table      - Toggle table format output
             \\ .debug      - Toggle debug mode
             \\ .checkpoint - Force WAL checkpoint
             \\ .sync       - Sync all pages to disk
@@ -127,6 +130,7 @@ pub const REPL = struct {
             views,
             debug,
             stats,
+            table,
             checkpoint,
             sync,
             cache,
@@ -184,6 +188,11 @@ pub const REPL = struct {
             .stats => {
                 self.stats_mode = !self.stats_mode;
                 try self.writer.print("Query timing: {s}\n", .{if (self.stats_mode) "ON" else "OFF"});
+                return .Success;
+            },
+            .table => {
+                self.table_mode = !self.table_mode;
+                try self.writer.print("Table format: {s}\n", .{if (self.table_mode) "ON" else "OFF"});
                 return .Success;
             },
             .cache => {
@@ -372,6 +381,14 @@ pub const REPL = struct {
     }
 
     fn print_results(self: *REPL, results: [][]RegisterValue) !void {
+        if (self.table_mode and results.len > 0) {
+            try self.print_results_table(results);
+        } else {
+            try self.print_results_simple(results);
+        }
+    }
+
+    fn print_results_simple(self: *REPL, results: [][]RegisterValue) !void {
         for (results) |row| {
             for (row, 0..) |val, i| {
                 if (i > 0) try self.writer.writeAll(" | ");
@@ -393,6 +410,100 @@ pub const REPL = struct {
             try self.writer.writeAll("\n");
         }
         try self.writer.print("({d} rows)\n", .{results.len});
+    }
+
+    fn print_results_table(self: *REPL, results: [][]RegisterValue) !void {
+        if (results.len == 0) return;
+
+        const num_cols = results[0].len;
+        var col_widths = try self.allocator.alloc(usize, num_cols);
+        defer self.allocator.free(col_widths);
+
+        for (col_widths) |*w| {
+            w.* = 4;
+        }
+
+        for (results) |row| {
+            for (row, 0..) |val, i| {
+                const width = self.value_width(val);
+                if (width > col_widths[i]) {
+                    col_widths[i] = width;
+                }
+            }
+        }
+
+        try self.print_separator(col_widths);
+
+        for (results) |row| {
+            try self.writer.writeAll("|");
+            for (row, 0..) |val, i| {
+                try self.writer.writeAll(" ");
+                const width = self.value_width(val);
+                try self.print_value(val);
+                var padding = col_widths[i] - width;
+                while (padding > 0) : (padding -= 1) {
+                    try self.writer.writeAll(" ");
+                }
+                try self.writer.writeAll(" |");
+            }
+            try self.writer.writeAll("\n");
+        }
+
+        try self.print_separator(col_widths);
+        try self.writer.print("({d} rows)\n", .{results.len});
+    }
+
+    fn print_separator(self: *REPL, col_widths: []usize) !void {
+        try self.writer.writeAll("+");
+        for (col_widths) |w| {
+            var i: usize = 0;
+            while (i < w + 2) : (i += 1) {
+                try self.writer.writeAll("-");
+            }
+            try self.writer.writeAll("+");
+        }
+        try self.writer.writeAll("\n");
+    }
+
+    fn value_width(self: *REPL, val: RegisterValue) usize {
+        _ = self;
+        return switch (val.type) {
+            .integer => blk: {
+                var n = val.integer;
+                if (n == 0) break :blk 1;
+                var w: usize = 0;
+                if (n < 0) {
+                    w = 1;
+                    n = -n;
+                }
+                while (n > 0) : (n = @divTrunc(n, 10)) {
+                    w += 1;
+                }
+                break :blk w;
+            },
+            .real => 8,
+            .text => val.text.len,
+            .blob => 6 + val.blob.len * 2,
+            .boolean => if (val.boolean) 4 else 5,
+            .null => 4,
+        };
+    }
+
+    fn print_value(self: *REPL, val: RegisterValue) !void {
+        switch (val.type) {
+            .integer => try self.writer.print("{d}", .{val.integer}),
+            .real => try self.writer.print("{d:.2}", .{val.real}),
+            .text => try self.writer.print("{s}", .{val.text}),
+            .blob => {
+                try self.writer.writeAll("BLOB(");
+                for (val.blob) |byte| {
+                    try self.writer.print("{X:0>2}", .{byte});
+                }
+                try self.writer.writeAll(")");
+            },
+            .boolean => try self.writer.print("{s}", .{if (val.boolean) "TRUE" else "FALSE"}),
+            .null => try self.writer.writeAll("NULL"),
+        }
     }
 
     fn print_ast(self: *REPL, stmt: ast.Statement) !void {

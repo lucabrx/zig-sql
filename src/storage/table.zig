@@ -434,6 +434,72 @@ pub const Database = struct {
         return self.index_btrees.get(index_name) orelse StorageError.IndexNotFound;
     }
 
+    pub fn allocate_overflow_page(self: *Database) !u32 {
+        const page_num = self.next_page;
+        const page = try self.pager.get_page(page_num);
+        row_mod.OverflowPage.init(page, 0);
+        self.next_page += 1;
+        self.pager.mark_dirty(page_num);
+        print("[DB] Allocated overflow page {}\n", .{page_num});
+        return page_num;
+    }
+
+    pub fn write_overflow_data(self: *Database, data: []const u8) !u32 {
+        if (data.len == 0) return 0;
+
+        const first_page_num = try self.allocate_overflow_page();
+        var current_page_num = first_page_num;
+        var offset: usize = 0;
+
+        while (offset < data.len) {
+            const page = try self.pager.get_page(current_page_num);
+            const chunk_size = @min(data.len - offset, row_mod.OVERFLOW_PAGE_DATA_SIZE);
+            row_mod.OverflowPage.set_data(page, data[offset .. offset + chunk_size]);
+            offset += chunk_size;
+
+            if (offset < data.len) {
+                const next_page_num = try self.allocate_overflow_page();
+                row_mod.OverflowPage.set_next_page(page, next_page_num);
+                self.pager.mark_dirty(current_page_num);
+                current_page_num = next_page_num;
+            } else {
+                row_mod.OverflowPage.set_next_page(page, 0);
+                self.pager.mark_dirty(current_page_num);
+            }
+        }
+
+        return first_page_num;
+    }
+
+    pub fn read_overflow_data(self: *Database, first_page: u32, total_size: usize, allocator: std.mem.Allocator) ![]u8 {
+        if (first_page == 0 or total_size == 0) return &[_]u8{};
+
+        const result = try allocator.alloc(u8, total_size);
+        var offset: usize = 0;
+        var current_page_num = first_page;
+
+        while (current_page_num != 0 and offset < total_size) {
+            const page = try self.pager.get_page(current_page_num);
+            const chunk_size = @min(total_size - offset, row_mod.OVERFLOW_PAGE_DATA_SIZE);
+            const page_data = row_mod.OverflowPage.get_data(page);
+            @memcpy(result[offset .. offset + chunk_size], page_data[0..chunk_size]);
+            offset += chunk_size;
+            current_page_num = row_mod.OverflowPage.get_next_page(page);
+        }
+
+        return result;
+    }
+
+    pub fn free_overflow_pages(self: *Database, first_page: u32) !void {
+        var current = first_page;
+        while (current != 0) {
+            const page = try self.pager.get_page(current);
+            const next = row_mod.OverflowPage.get_next_page(page);
+            try self.pager.free_page(current);
+            current = next;
+        }
+    }
+
     fn save_metadata(self: *Database) !void {
         const page = try self.pager.get_page(0);
         std.mem.writeInt(u32, page.data[12..16], self.next_page, .little);

@@ -284,6 +284,232 @@ pub const Btree = struct {
             try self.print_node(right_child, level + 1);
         }
     }
+
+    pub fn delete(self: *Btree, key: u32) !void {
+        const cursor = try self.search(key);
+        const page = try self.pager.get_page(cursor.page_num);
+        const num_cells = node.get_num_cells(page);
+
+        if (cursor.cell_num >= num_cells) {
+            return error.KeyNotFound;
+        }
+
+        const key_at_cursor = row.get_leaf_key(page, cursor.cell_num);
+        if (key_at_cursor != key) {
+            return error.KeyNotFound;
+        }
+
+        if (cursor.cell_num < num_cells - 1) {
+            var i: u32 = cursor.cell_num;
+            while (i < num_cells - 1) : (i += 1) {
+                const src_offset = row.leaf_cell_offset(i + 1);
+                const dest_offset = row.leaf_cell_offset(i);
+                @memcpy(
+                    page.data[dest_offset .. dest_offset + row.LEAF_CELL_SIZE],
+                    page.data[src_offset .. src_offset + row.LEAF_CELL_SIZE],
+                );
+            }
+        }
+        node.set_num_cells(page, num_cells - 1);
+        self.pager.mark_dirty(cursor.page_num);
+
+        if (!node.is_node_root(page)) {
+            try self.rebalance_after_delete(cursor.page_num);
+        }
+
+        print("[BTREE] Deleted key {}\n", .{key});
+    }
+
+    fn min_leaf_cells() u32 {
+        return row.max_leaf_cells() / 2;
+    }
+
+    fn rebalance_after_delete(self: *Btree, page_num: u32) !void {
+        const page = try self.pager.get_page(page_num);
+        const num_cells = node.get_num_cells(page);
+
+        if (num_cells >= min_leaf_cells()) {
+            return;
+        }
+
+        if (node.is_node_root(page)) {
+            return;
+        }
+
+        const parent_num = node.get_parent_pointer(page);
+        const parent = try self.pager.get_page(parent_num);
+        const parent_cells = node.get_num_cells(parent);
+
+        var child_index: ?u32 = null;
+        var i: u32 = 0;
+        while (i < parent_cells) : (i += 1) {
+            if (node.get_internal_child(parent, i) == page_num) {
+                child_index = i;
+                break;
+            }
+        }
+        if (child_index == null and node.get_right_child(parent) == page_num) {
+            child_index = parent_cells;
+        }
+
+        if (child_index == null) return;
+
+        const idx = child_index.?;
+
+        if (idx > 0) {
+            const left_sibling_num = node.get_internal_child(parent, idx - 1);
+            const left_sibling = try self.pager.get_page(left_sibling_num);
+            const left_cells = node.get_num_cells(left_sibling);
+
+            if (left_cells > min_leaf_cells()) {
+                try self.borrow_from_left(page_num, left_sibling_num, parent_num, idx - 1);
+                return;
+            }
+        }
+
+        if (idx < parent_cells) {
+            const right_sibling_num = if (idx + 1 < parent_cells)
+                node.get_internal_child(parent, idx + 1)
+            else
+                node.get_right_child(parent);
+            const right_sibling = try self.pager.get_page(right_sibling_num);
+            const right_cells = node.get_num_cells(right_sibling);
+
+            if (right_cells > min_leaf_cells()) {
+                try self.borrow_from_right(page_num, right_sibling_num, parent_num, idx);
+                return;
+            }
+        }
+
+        if (idx > 0) {
+            const left_sibling_num = node.get_internal_child(parent, idx - 1);
+            try self.merge_leaves(left_sibling_num, page_num, parent_num, idx - 1);
+        } else if (idx < parent_cells) {
+            const right_sibling_num = if (idx + 1 < parent_cells)
+                node.get_internal_child(parent, idx + 1)
+            else
+                node.get_right_child(parent);
+            try self.merge_leaves(page_num, right_sibling_num, parent_num, idx);
+        }
+    }
+
+    fn borrow_from_left(self: *Btree, page_num: u32, left_num: u32, parent_num: u32, parent_key_idx: u32) !void {
+        const page = try self.pager.get_page(page_num);
+        const left = try self.pager.get_page(left_num);
+        const parent = try self.pager.get_page(parent_num);
+
+        const page_cells = node.get_num_cells(page);
+        const left_cells = node.get_num_cells(left);
+
+        var i: u32 = page_cells;
+        while (i > 0) : (i -= 1) {
+            const src_offset = row.leaf_cell_offset(i - 1);
+            const dest_offset = row.leaf_cell_offset(i);
+            @memcpy(
+                page.data[dest_offset .. dest_offset + row.LEAF_CELL_SIZE],
+                page.data[src_offset .. src_offset + row.LEAF_CELL_SIZE],
+            );
+        }
+
+        const borrow_offset = row.leaf_cell_offset(left_cells - 1);
+        const dest_offset = row.leaf_cell_offset(0);
+        @memcpy(
+            page.data[dest_offset .. dest_offset + row.LEAF_CELL_SIZE],
+            left.data[borrow_offset .. borrow_offset + row.LEAF_CELL_SIZE],
+        );
+
+        node.set_num_cells(page, page_cells + 1);
+        node.set_num_cells(left, left_cells - 1);
+
+        const new_left_max = row.get_leaf_key(left, left_cells - 2);
+        node.set_internal_key(parent, parent_key_idx, new_left_max);
+
+        self.pager.mark_dirty(page_num);
+        self.pager.mark_dirty(left_num);
+        self.pager.mark_dirty(parent_num);
+    }
+
+    fn borrow_from_right(self: *Btree, page_num: u32, right_num: u32, parent_num: u32, parent_key_idx: u32) !void {
+        const page = try self.pager.get_page(page_num);
+        const right = try self.pager.get_page(right_num);
+        const parent = try self.pager.get_page(parent_num);
+
+        const page_cells = node.get_num_cells(page);
+        const right_cells = node.get_num_cells(right);
+
+        const src_offset = row.leaf_cell_offset(0);
+        const dest_offset = row.leaf_cell_offset(page_cells);
+        @memcpy(
+            page.data[dest_offset .. dest_offset + row.LEAF_CELL_SIZE],
+            right.data[src_offset .. src_offset + row.LEAF_CELL_SIZE],
+        );
+
+        var i: u32 = 0;
+        while (i < right_cells - 1) : (i += 1) {
+            const s_off = row.leaf_cell_offset(i + 1);
+            const d_off = row.leaf_cell_offset(i);
+            @memcpy(
+                right.data[d_off .. d_off + row.LEAF_CELL_SIZE],
+                right.data[s_off .. s_off + row.LEAF_CELL_SIZE],
+            );
+        }
+
+        node.set_num_cells(page, page_cells + 1);
+        node.set_num_cells(right, right_cells - 1);
+
+        const new_page_max = row.get_leaf_key(page, page_cells);
+        node.set_internal_key(parent, parent_key_idx, new_page_max);
+
+        self.pager.mark_dirty(page_num);
+        self.pager.mark_dirty(right_num);
+        self.pager.mark_dirty(parent_num);
+    }
+
+    fn merge_leaves(self: *Btree, left_num: u32, right_num: u32, parent_num: u32, parent_key_idx: u32) !void {
+        const left = try self.pager.get_page(left_num);
+        const right = try self.pager.get_page(right_num);
+        const parent = try self.pager.get_page(parent_num);
+
+        const left_cells = node.get_num_cells(left);
+        const right_cells = node.get_num_cells(right);
+
+        var i: u32 = 0;
+        while (i < right_cells) : (i += 1) {
+            const src_offset = row.leaf_cell_offset(i);
+            const dest_offset = row.leaf_cell_offset(left_cells + i);
+            @memcpy(
+                left.data[dest_offset .. dest_offset + row.LEAF_CELL_SIZE],
+                right.data[src_offset .. src_offset + row.LEAF_CELL_SIZE],
+            );
+        }
+
+        node.set_num_cells(left, left_cells + right_cells);
+        node.set_next_leaf(left, node.get_next_leaf(right));
+
+        const parent_cells = node.get_num_cells(parent);
+        var j: u32 = parent_key_idx;
+        while (j < parent_cells - 1) : (j += 1) {
+            node.set_internal_child(parent, j, node.get_internal_child(parent, j + 1));
+            node.set_internal_key(parent, j, node.get_internal_key(parent, j + 1));
+        }
+
+        if (parent_key_idx + 1 >= parent_cells) {
+            node.set_right_child(parent, left_num);
+        }
+
+        node.set_num_cells(parent, parent_cells - 1);
+
+        self.pager.mark_dirty(left_num);
+        self.pager.mark_dirty(parent_num);
+
+        if (node.is_node_root(parent) and node.get_num_cells(parent) == 0) {
+            @memcpy(&parent.data, &left.data);
+            node.set_node_root(parent, true);
+            self.pager.mark_dirty(parent_num);
+        }
+
+        print("[BTREE] Merged leaves {} and {}\n", .{ left_num, right_num });
+    }
 };
 
 test "btree initialization" {
