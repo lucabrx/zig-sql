@@ -13,11 +13,111 @@ const posix = std.posix;
 
 const HISTORY_SIZE = 100;
 const STMT_CACHE_SIZE = 64;
+const RESULT_CACHE_SIZE = 32;
 
 const CachedStatement = struct {
     sql_hash: u64,
     instructions: []Instruction,
     strings: [][]const u8,
+};
+
+const CachedResult = struct {
+    sql_hash: u64,
+    rows: [][]RegisterValue,
+    strings: [][]const u8,
+};
+
+const ResultCache = struct {
+    entries: [RESULT_CACHE_SIZE]?CachedResult,
+    allocator: std.mem.Allocator,
+    hits: u64,
+    misses: u64,
+    enabled: bool,
+
+    fn init(allocator: std.mem.Allocator) ResultCache {
+        return .{
+            .entries = [_]?CachedResult{null} ** RESULT_CACHE_SIZE,
+            .allocator = allocator,
+            .hits = 0,
+            .misses = 0,
+            .enabled = true,
+        };
+    }
+
+    fn deinit(self: *ResultCache) void {
+        self.clear();
+    }
+
+    fn clear(self: *ResultCache) void {
+        for (&self.entries) |*entry| {
+            if (entry.*) |cached| {
+                for (cached.strings) |s| {
+                    self.allocator.free(s);
+                }
+                self.allocator.free(cached.strings);
+                for (cached.rows) |row| {
+                    self.allocator.free(row);
+                }
+                self.allocator.free(cached.rows);
+            }
+            entry.* = null;
+        }
+    }
+
+    fn get(self: *ResultCache, sql: []const u8) ?[][]RegisterValue {
+        if (!self.enabled) return null;
+        const hash = std.hash.Wyhash.hash(0, sql);
+        const idx = hash % RESULT_CACHE_SIZE;
+        if (self.entries[idx]) |cached| {
+            if (cached.sql_hash == hash) {
+                self.hits += 1;
+                return cached.rows;
+            }
+        }
+        self.misses += 1;
+        return null;
+    }
+
+    fn put(self: *ResultCache, sql: []const u8, results: [][]RegisterValue) !void {
+        if (!self.enabled) return;
+        const hash = std.hash.Wyhash.hash(0, sql);
+        const idx = hash % RESULT_CACHE_SIZE;
+
+        if (self.entries[idx]) |old| {
+            for (old.strings) |s| {
+                self.allocator.free(s);
+            }
+            self.allocator.free(old.strings);
+            for (old.rows) |row| {
+                self.allocator.free(row);
+            }
+            self.allocator.free(old.rows);
+        }
+
+        var strings = std.ArrayList([]const u8){};
+        const new_rows = try self.allocator.alloc([]RegisterValue, results.len);
+        for (results, 0..) |row, i| {
+            new_rows[i] = try self.allocator.alloc(RegisterValue, row.len);
+            for (row, 0..) |val, j| {
+                new_rows[i][j] = val;
+                if (val.type == .text and val.text.len > 0) {
+                    const owned = try self.allocator.dupe(u8, val.text);
+                    try strings.append(self.allocator, owned);
+                    new_rows[i][j].text = owned;
+                }
+            }
+        }
+
+        self.entries[idx] = .{
+            .sql_hash = hash,
+            .rows = new_rows,
+            .strings = try strings.toOwnedSlice(self.allocator),
+        };
+    }
+
+    fn invalidate(self: *ResultCache) void {
+        self.clear();
+    }
 };
 
 const StmtCache = struct {
@@ -431,6 +531,7 @@ pub const REPL = struct {
     table_mode: bool,
     line_editor: LineEditor,
     stmt_cache: StmtCache,
+    result_cache: ResultCache,
 
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8, writer: *std.Io.Writer, reader: *std.Io.Reader) REPL {
         return REPL{
@@ -445,6 +546,7 @@ pub const REPL = struct {
             .table_mode = false,
             .line_editor = LineEditor.init(allocator),
             .stmt_cache = StmtCache.init(allocator),
+            .result_cache = ResultCache.init(allocator),
         };
     }
 
@@ -465,6 +567,7 @@ pub const REPL = struct {
 
     pub fn shutdown(self: *REPL) void {
         self.stmt_cache.deinit();
+        self.result_cache.deinit();
         self.line_editor.deinit();
         if (self.db) |db| {
             db.close();
@@ -759,12 +862,20 @@ pub const REPL = struct {
         try self.writer.print("  Misses: {d}\n", .{stats.misses});
         try self.writer.print("  Ratio:  {d:.1}%\n", .{stats.ratio * 100});
 
-        const total = self.stmt_cache.hits + self.stmt_cache.misses;
-        const ratio: f64 = if (total > 0) @as(f64, @floatFromInt(self.stmt_cache.hits)) / @as(f64, @floatFromInt(total)) else 0;
+        const stmt_total = self.stmt_cache.hits + self.stmt_cache.misses;
+        const stmt_ratio: f64 = if (stmt_total > 0) @as(f64, @floatFromInt(self.stmt_cache.hits)) / @as(f64, @floatFromInt(stmt_total)) else 0;
         try self.writer.print("Statement Cache:\n", .{});
         try self.writer.print("  Hits:   {d}\n", .{self.stmt_cache.hits});
         try self.writer.print("  Misses: {d}\n", .{self.stmt_cache.misses});
-        try self.writer.print("  Ratio:  {d:.1}%\n", .{ratio * 100});
+        try self.writer.print("  Ratio:  {d:.1}%\n", .{stmt_ratio * 100});
+
+        const result_total = self.result_cache.hits + self.result_cache.misses;
+        const result_ratio: f64 = if (result_total > 0) @as(f64, @floatFromInt(self.result_cache.hits)) / @as(f64, @floatFromInt(result_total)) else 0;
+        try self.writer.print("Result Cache:\n", .{});
+        try self.writer.print("  Hits:   {d}\n", .{self.result_cache.hits});
+        try self.writer.print("  Misses: {d}\n", .{self.result_cache.misses});
+        try self.writer.print("  Ratio:  {d:.1}%\n", .{result_ratio * 100});
+        try self.writer.print("  Enabled: {s}\n", .{if (self.result_cache.enabled) "yes" else "no"});
     }
 
     fn dump_database(self: *REPL) !void {
@@ -1017,8 +1128,29 @@ pub const REPL = struct {
         const start_time = if (self.stats_mode) std.time.nanoTimestamp() else 0;
 
         const is_select = std.ascii.startsWithIgnoreCase(input, "select");
+        const is_write = std.ascii.startsWithIgnoreCase(input, "insert") or
+            std.ascii.startsWithIgnoreCase(input, "update") or
+            std.ascii.startsWithIgnoreCase(input, "delete") or
+            std.ascii.startsWithIgnoreCase(input, "create") or
+            std.ascii.startsWithIgnoreCase(input, "drop") or
+            std.ascii.startsWithIgnoreCase(input, "alter");
+
+        if (is_write) {
+            self.result_cache.invalidate();
+        }
 
         if (is_select and !self.debug_mode) {
+            if (self.result_cache.get(input)) |cached_results| {
+                try self.print_results(cached_results);
+                if (self.stats_mode) {
+                    const end_time = std.time.nanoTimestamp();
+                    const elapsed_ns = end_time - start_time;
+                    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+                    try self.writer.print("Time: {d:.3}ms (result cached)\n", .{elapsed_ms});
+                }
+                return;
+            }
+
             if (self.stmt_cache.get(input)) |cached_insts| {
                 var vm = VM.init(self.allocator, db);
                 vm.set_debug(false);
@@ -1030,13 +1162,14 @@ pub const REPL = struct {
                 };
                 const results = vm.get_results();
                 if (results.len > 0) {
+                    self.result_cache.put(input, results) catch {};
                     try self.print_results(results);
                 }
                 if (self.stats_mode) {
                     const end_time = std.time.nanoTimestamp();
                     const elapsed_ns = end_time - start_time;
                     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
-                    try self.writer.print("Time: {d:.3}ms (cached)\n", .{elapsed_ms});
+                    try self.writer.print("Time: {d:.3}ms (stmt cached)\n", .{elapsed_ms});
                 }
                 return;
             }
@@ -1138,6 +1271,9 @@ pub const REPL = struct {
 
         const results = vm.get_results();
         if (results.len > 0) {
+            if (is_select and !self.debug_mode) {
+                self.result_cache.put(input, results) catch {};
+            }
             try self.print_results(results);
         } else {
             try self.writer.writeAll("OK\n");
