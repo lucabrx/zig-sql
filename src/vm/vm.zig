@@ -272,6 +272,7 @@ pub const VM = struct {
             .drop_index => try self.op_drop_index(inst),
             .index_scan => try self.op_index_scan(inst),
             .index_next => try self.op_index_next(inst),
+            .pk_seek => try self.op_pk_seek(inst),
             .txn_begin => try self.op_txn_begin(),
             .txn_commit => try self.op_txn_commit(),
             .txn_rollback => try self.op_txn_rollback(),
@@ -768,6 +769,41 @@ pub const VM = struct {
         try self.cursors.put(inst.p1, cursor);
 
         self.pc = @intCast(inst.p2);
+    }
+
+    fn op_pk_seek(self: *VM, inst: Instruction) !void {
+        const table = self.tables.get(inst.p1) orelse return VmErrors.NoTable;
+        const value_reg: usize = @intCast(inst.p3);
+        const search_val = self.registers[value_reg];
+
+        if (search_val.type != .integer) {
+            self.pc = @intCast(inst.p2);
+            return;
+        }
+
+        const pk_value: u32 = @intCast(search_val.integer);
+        var cursor = table.search(pk_value) catch {
+            self.pc = @intCast(inst.p2);
+            return;
+        };
+
+        if (cursor.is_end()) {
+            self.pc = @intCast(inst.p2);
+            return;
+        }
+
+        const key = cursor.key() catch {
+            self.pc = @intCast(inst.p2);
+            return;
+        };
+
+        if (key != pk_value) {
+            self.pc = @intCast(inst.p2);
+            return;
+        }
+
+        try self.cursors.put(inst.p1, cursor);
+        self.pc += 1;
     }
 
     fn op_txn_begin(self: *VM) !void {

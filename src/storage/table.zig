@@ -18,7 +18,14 @@ const Transaction = @import("transaction.zig").Transaction;
 const Wal = @import("wal.zig").Wal;
 const Catalog = @import("catalog.zig").Catalog;
 
-const print = std.debug.print;
+const builtin = @import("builtin");
+const DEBUG = builtin.mode == .Debug;
+
+fn debugPrint(comptime fmt: []const u8, args: anytype) void {
+    if (DEBUG) {
+        std.debug.print(fmt, args);
+    }
+}
 
 pub const Table = struct {
     schema: *const Schema,
@@ -62,7 +69,7 @@ pub const Table = struct {
     }
 
     pub fn debug(self: *Table) void {
-        print("[TABLE] name={s}, root_page={}\n", .{ self.schema.table_name, self.root_page });
+        debugPrint("[TABLE] name={s}, root_page={}\n", .{ self.schema.table_name, self.root_page });
     }
 
     pub fn get_row_value_for_index(self: *Table, r: *const DynamicRow, col_idx: usize) RowValue {
@@ -119,7 +126,7 @@ pub const Database = struct {
         if (wal) |w| {
             const recovered = try w.recover(pager);
             if (recovered > 0) {
-                print("[DB] Recovered {} pages from WAL\n", .{recovered});
+                debugPrint("[DB] Recovered {} pages from WAL\n", .{recovered});
             }
         }
 
@@ -201,7 +208,7 @@ pub const Database = struct {
         _ = try self.pager.get_page(CATALOG_PAGE);
         self.pager.mark_dirty(CATALOG_PAGE);
 
-        print("[DB] Initialized metadata page\n", .{});
+        debugPrint("[DB] Initialized metadata page\n", .{});
     }
 
     fn load_metadata(self: *Database) !void {
@@ -210,7 +217,7 @@ pub const Database = struct {
             return StorageError.InvalidDatabaseFile;
         }
         self.next_page = std.mem.readInt(u32, page.data[12..16], .little);
-        print("[DB] Loaded metadata, next page: {}\n", .{self.next_page});
+        debugPrint("[DB] Loaded metadata, next page: {}\n", .{self.next_page});
     }
 
     pub fn create_table(self: *Database, s: *const Schema) !*Table {
@@ -233,7 +240,7 @@ pub const Database = struct {
         try self.save_metadata();
         try self.save_catalog();
 
-        print("[DB] Created table '{s}' at page {}\n", .{ owned_name, root_page });
+        debugPrint("[DB] Created table '{s}' at page {}\n", .{ owned_name, root_page });
         return table_ptr;
     }
 
@@ -273,7 +280,7 @@ pub const Database = struct {
         self.allocator.destroy(table);
         self.allocator.free(kv.key);
         try self.save_catalog();
-        print("[DB] Dropped table '{s}'\n", .{name});
+        debugPrint("[DB] Dropped table '{s}'\n", .{name});
     }
 
     pub fn list_tables(self: *Database) ![][]const u8 {
@@ -316,7 +323,7 @@ pub const Database = struct {
         try self.save_metadata();
         try self.save_catalog();
 
-        print("[DB] Created index '{s}' on table '{s}' at page {}\n", .{ owned_name, index_def.table, root_page });
+        debugPrint("[DB] Created index '{s}' on table '{s}' at page {}\n", .{ owned_name, index_def.table, root_page });
     }
 
     pub fn get_index(self: *Database, name: []const u8) !*schema_mod.IndexDef {
@@ -352,7 +359,7 @@ pub const Database = struct {
         self.allocator.destroy(index_def);
         self.allocator.free(kv.key);
         try self.save_catalog();
-        print("[DB] Dropped index '{s}'\n", .{name});
+        debugPrint("[DB] Dropped index '{s}'\n", .{name});
     }
 
     pub fn create_view(self: *Database, name: []const u8, sql: []const u8) !void {
@@ -371,7 +378,7 @@ pub const Database = struct {
         };
 
         try self.views.put(owned_name, view_def);
-        print("[DB] Created view '{s}'\n", .{name});
+        debugPrint("[DB] Created view '{s}'\n", .{name});
     }
 
     pub fn get_view(self: *Database, name: []const u8) !*schema_mod.ViewDef {
@@ -385,7 +392,7 @@ pub const Database = struct {
         self.allocator.free(view_def.sql);
         self.allocator.destroy(view_def);
         self.allocator.free(kv.key);
-        print("[DB] Dropped view '{s}'\n", .{name});
+        debugPrint("[DB] Dropped view '{s}'\n", .{name});
     }
 
     pub fn insert_into_indexes(self: *Database, table_name: []const u8, rowid: u32, row: *const DynamicRow) !void {
@@ -440,7 +447,7 @@ pub const Database = struct {
         row_mod.OverflowPage.init(page, 0);
         self.next_page += 1;
         self.pager.mark_dirty(page_num);
-        print("[DB] Allocated overflow page {}\n", .{page_num});
+        debugPrint("[DB] Allocated overflow page {}\n", .{page_num});
         return page_num;
     }
 
@@ -640,7 +647,7 @@ pub const Database = struct {
             reclaimed += try self.compact_table(table);
         }
 
-        print("[DB] VACUUM: reclaimed {} cells, {} free pages available\n", .{ reclaimed, free_count });
+        debugPrint("[DB] VACUUM: reclaimed {} cells, {} free pages available\n", .{ reclaimed, free_count });
         return reclaimed;
     }
 
@@ -741,7 +748,7 @@ pub const Database = struct {
     }
 
     pub fn debug(self: *Database) void {
-        print("[DB] tables={}, next_page={}\n", .{ self.tables.count(), self.next_page });
+        debugPrint("[DB] tables={}, next_page={}\n", .{ self.tables.count(), self.next_page });
     }
 };
 

@@ -3,7 +3,14 @@ const Pager = @import("pager.zig").Pager;
 const Page = @import("pager.zig").Page;
 const PAGE_SIZE = @import("pager.zig").PAGE_SIZE;
 
-const print = std.debug.print;
+const builtin = @import("builtin");
+const DEBUG = builtin.mode == .Debug;
+
+fn debugPrint(comptime fmt: []const u8, args: anytype) void {
+    if (DEBUG) {
+        std.debug.print(fmt, args);
+    }
+}
 
 pub const TransactionState = enum {
     none,
@@ -80,7 +87,7 @@ pub const Transaction = struct {
             return error.CannotChangeIsolationInTransaction;
         }
         self.isolation_level = level;
-        print("[TXN] SET ISOLATION LEVEL {s}\n", .{level.to_string()});
+        debugPrint("[TXN] SET ISOLATION LEVEL {s}\n", .{level.to_string()});
     }
 
     pub fn begin(self: *Transaction) !void {
@@ -88,7 +95,7 @@ pub const Transaction = struct {
             return error.TransactionAlreadyActive;
         }
         self.state = .active;
-        print("[TXN] BEGIN ({s})\n", .{self.isolation_level.to_string()});
+        debugPrint("[TXN] BEGIN ({s})\n", .{self.isolation_level.to_string()});
     }
 
     pub fn commit(self: *Transaction) !void {
@@ -120,7 +127,7 @@ pub const Transaction = struct {
         self.savepoints.clearRetainingCapacity();
 
         self.state = .none;
-        print("[TXN] COMMIT\n", .{});
+        debugPrint("[TXN] COMMIT\n", .{});
     }
 
     pub fn rollback(self: *Transaction) !void {
@@ -158,7 +165,7 @@ pub const Transaction = struct {
         self.savepoints.clearRetainingCapacity();
 
         self.state = .none;
-        print("[TXN] ROLLBACK\n", .{});
+        debugPrint("[TXN] ROLLBACK\n", .{});
     }
 
     pub fn get_page_data(self: *Transaction, page_num: u32) ?*[PAGE_SIZE]u8 {
@@ -215,7 +222,7 @@ pub const Transaction = struct {
             .shadow_pages = sp_shadows,
         });
 
-        print("[TXN] SAVEPOINT {s}\n", .{name});
+        debugPrint("[TXN] SAVEPOINT {s}\n", .{name});
     }
 
     pub fn release_savepoint(self: *Transaction, name: []const u8) !void {
@@ -238,7 +245,7 @@ pub const Transaction = struct {
                 self.allocator.destroy(shadow_ptr.*);
             }
             sp.shadow_pages.deinit();
-            print("[TXN] RELEASE SAVEPOINT {s}\n", .{name});
+            debugPrint("[TXN] RELEASE SAVEPOINT {s}\n", .{name});
         } else {
             return error.SavepointNotFound;
         }
@@ -282,7 +289,7 @@ pub const Transaction = struct {
             removed.shadow_pages.deinit();
         }
 
-        print("[TXN] ROLLBACK TO SAVEPOINT {s}\n", .{name});
+        debugPrint("[TXN] ROLLBACK TO SAVEPOINT {s}\n", .{name});
     }
 
     pub fn save_page_for_rollback(self: *Transaction, page_num: u32) !void {

@@ -63,6 +63,7 @@ pub const Opcode = enum(u8) {
     // Index operations
     index_scan,
     index_next,
+    pk_seek,
 
     txn_begin,
     txn_commit,
@@ -142,6 +143,7 @@ pub const Opcode = enum(u8) {
             .drop_index => "DROP_INDEX",
             .index_scan => "INDEX_SCAN",
             .index_next => "INDEX_NEXT",
+            .pk_seek => "PK_SEEK",
             .txn_begin => "TXN_BEGIN",
             .txn_commit => "TXN_COMMIT",
             .txn_rollback => "TXN_ROLLBACK",

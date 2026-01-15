@@ -17,6 +17,7 @@ const IndexCandidate = struct {
     index_name: []const u8,
     column_name: []const u8,
     value: Expression,
+    is_pk: bool = false,
 };
 
 const TableInfo = struct {
@@ -554,35 +555,64 @@ fn compile_index_scan(c: *Compiler, stmt: SelectStatement, schema: *const Schema
     try expression.compile_expression(c, candidate.value, value_reg, schema);
 
     _ = try c.emit(.open_read, 0, 0, 0, stmt.from[0].name, null);
-    const scan_addr = try c.emit(.index_scan, 0, 0, value_reg, candidate.index_name, null);
 
-    const loop_start = c.current_addr();
+    if (candidate.is_pk) {
+        const seek_addr = try c.emit(.pk_seek, 0, 0, value_reg, "", null);
 
-    const start_reg = c.next_reg;
-    const num_cols = output_cols.len;
-    for (0..num_cols) |_| {
-        _ = c.alloc_reg();
-    }
-
-    for (output_cols, 0..) |col_info, i| {
-        const reg: i32 = @intCast(start_reg + @as(i32, @intCast(i)));
-        switch (col_info) {
-            .column_idx => |col_idx| {
-                _ = try c.emit(.column, 0, col_idx, reg, "", null);
-            },
-            .expression => |expr| {
-                try expression.compile_expression(c, expr, reg, schema);
-            },
+        const start_reg = c.next_reg;
+        const num_cols = output_cols.len;
+        for (0..num_cols) |_| {
+            _ = c.alloc_reg();
         }
+
+        for (output_cols, 0..) |col_info, i| {
+            const reg: i32 = @intCast(start_reg + @as(i32, @intCast(i)));
+            switch (col_info) {
+                .column_idx => |col_idx| {
+                    _ = try c.emit(.column, 0, col_idx, reg, "", null);
+                },
+                .expression => |expr| {
+                    try expression.compile_expression(c, expr, reg, schema);
+                },
+            }
+        }
+
+        _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), if (stmt.distinct) 1 else 0, "", null);
+
+        const close_addr = c.current_addr();
+        _ = try c.emit(.close, 0, 0, 0, "", null);
+        c.patch(seek_addr, @intCast(close_addr));
+    } else {
+        const scan_addr = try c.emit(.index_scan, 0, 0, value_reg, candidate.index_name, null);
+
+        const loop_start = c.current_addr();
+
+        const start_reg = c.next_reg;
+        const num_cols = output_cols.len;
+        for (0..num_cols) |_| {
+            _ = c.alloc_reg();
+        }
+
+        for (output_cols, 0..) |col_info, i| {
+            const reg: i32 = @intCast(start_reg + @as(i32, @intCast(i)));
+            switch (col_info) {
+                .column_idx => |col_idx| {
+                    _ = try c.emit(.column, 0, col_idx, reg, "", null);
+                },
+                .expression => |expr| {
+                    try expression.compile_expression(c, expr, reg, schema);
+                },
+            }
+        }
+
+        _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), if (stmt.distinct) 1 else 0, "", null);
+
+        _ = try c.emit(.index_next, 0, @intCast(loop_start), 0, "", null);
+
+        const close_addr = c.current_addr();
+        _ = try c.emit(.close, 0, 0, 0, "", null);
+        c.patch(scan_addr, @intCast(close_addr));
     }
-
-    _ = try c.emit(.result_row, start_reg, @intCast(output_cols.len), if (stmt.distinct) 1 else 0, "", null);
-
-    _ = try c.emit(.index_next, 0, @intCast(loop_start), 0, "", null);
-
-    const close_addr = c.current_addr();
-    _ = try c.emit(.close, 0, 0, 0, "", null);
-    c.patch(scan_addr, @intCast(close_addr));
 }
 
 const EqualityCandidate = struct { col: []const u8, val: Expression };
@@ -594,6 +624,20 @@ fn find_usable_index(c: *Compiler, where_expr: Expression, table_name: []const u
     try extract_equality_conditions(where_expr, &candidates, c.allocator);
 
     if (candidates.items.len == 0) return null;
+
+    if (schema.pk_index) |pk_idx| {
+        const pk_col = schema.columns[pk_idx];
+        for (candidates.items) |cand| {
+            if (std.mem.eql(u8, pk_col.name, cand.col)) {
+                return IndexCandidate{
+                    .index_name = "__pk__",
+                    .column_name = cand.col,
+                    .value = cand.val,
+                    .is_pk = true,
+                };
+            }
+        }
+    }
 
     var idx_iter = c.db.indexes.iterator();
     while (idx_iter.next()) |entry| {
@@ -608,6 +652,7 @@ fn find_usable_index(c: *Compiler, where_expr: Expression, table_name: []const u
                         .index_name = entry.key_ptr.*,
                         .column_name = cand.col,
                         .value = cand.val,
+                        .is_pk = false,
                     };
                 }
             }

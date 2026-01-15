@@ -175,14 +175,28 @@ const LineEditor = struct {
         try writer.writeAll(prompt);
         try writer.flush();
 
-        var stdin_buf: [1024]u8 = undefined;
-        var stdin = std.fs.File.stdin().reader(&stdin_buf);
-        const line = try stdin.interface.takeDelimiter('\n') orelse return null;
-        const trimmed = std.mem.trimRight(u8, line, "\r");
-        if (trimmed.len > 0) {
-            try self.addHistory(trimmed);
+        var line_buf: [4096]u8 = undefined;
+        var pos: usize = 0;
+        const stdin = std.fs.File.stdin();
+
+        while (pos < line_buf.len) {
+            var byte: [1]u8 = undefined;
+            const n = stdin.read(&byte) catch return null;
+            if (n == 0) {
+                if (pos == 0) return null;
+                break;
+            }
+            if (byte[0] == '\n') break;
+            if (byte[0] != '\r') {
+                line_buf[pos] = byte[0];
+                pos += 1;
+            }
         }
-        return try self.allocator.dupe(u8, trimmed);
+
+        if (pos > 0) {
+            try self.addHistory(line_buf[0..pos]);
+        }
+        return try self.allocator.dupe(u8, line_buf[0..pos]);
     }
 
     fn refreshLine(self: *LineEditor, writer: anytype, prompt: []const u8) !void {

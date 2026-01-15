@@ -1,6 +1,14 @@
 const std = @import("std");
 const fs = std.fs;
-const print = std.debug.print;
+const builtin = @import("builtin");
+
+const DEBUG = builtin.mode == .Debug;
+
+fn debugPrint(comptime fmt: []const u8, args: anytype) void {
+    if (DEBUG) {
+        std.debug.print(fmt, args);
+    }
+}
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_PAGES: usize = 100;
@@ -96,12 +104,12 @@ pub const Pager = struct {
         const file_len = stat.size;
 
         if (file_len % PAGE_SIZE != 0) {
-            print("[PAGER] Warning: file size not aligned to page boundary\n", .{});
+            debugPrint("[PAGER] Warning: file size not aligned to page boundary\n", .{});
         }
 
         const num_pages = @as(u32, @intCast(file_len / PAGE_SIZE));
 
-        print("[PAGER] Opened database: {s} ({} pages)\n", .{ filename, num_pages });
+        debugPrint("[PAGER] Opened database: {s} ({} pages)\n", .{ filename, num_pages });
 
         var pager = Pager{
             .file = file,
@@ -126,7 +134,7 @@ pub const Pager = struct {
         self.save_free_list() catch {};
 
         self.flush() catch |err| {
-            print("[PAGER] Error flushing on close: {}\n", .{err});
+            debugPrint("[PAGER] Error flushing on close: {}\n", .{err});
         };
 
         if (self.file) |f| {
@@ -142,7 +150,7 @@ pub const Pager = struct {
 
         self.free_pages.deinit(self.allocator);
 
-        print("[PAGER] Database closed\n", .{});
+        debugPrint("[PAGER] Database closed\n", .{});
     }
 
     fn count_cached_pages(self: *Pager) usize {
@@ -208,14 +216,14 @@ pub const Pager = struct {
                 if (bytes_read != PAGE_SIZE) return error.IncompleteRead;
 
                 if (self.use_checksums and !verify_checksum(&page.data)) {
-                    print("[PAGER] ERROR: Page {} checksum mismatch - corrupted!\n", .{page_num});
+                    debugPrint("[PAGER] ERROR: Page {} checksum mismatch - corrupted!\n", .{page_num});
                     self.allocator.destroy(page);
                     return error.PageCorrupted;
                 }
             }
-            print("[PAGER] Loaded page {} from disk\n", .{page_num});
+            debugPrint("[PAGER] Loaded page {} from disk\n", .{page_num});
         } else {
-            print("[PAGER] Allocated new page {}\n", .{page_num});
+            debugPrint("[PAGER] Allocated new page {}\n", .{page_num});
         }
 
         self.pages[page_num] = page;
@@ -230,7 +238,7 @@ pub const Pager = struct {
     pub fn allocate_page(self: *Pager) !u32 {
         if (self.free_pages.items.len > 0) {
             const page_num = self.free_pages.pop();
-            print("[PAGER] Reusing free page {}\n", .{page_num});
+            debugPrint("[PAGER] Reusing free page {}\n", .{page_num});
             return page_num;
         }
 
@@ -252,7 +260,7 @@ pub const Pager = struct {
         }
 
         try self.free_pages.append(self.allocator, page_num);
-        print("[PAGER] Freed page {}\n", .{page_num});
+        debugPrint("[PAGER] Freed page {}\n", .{page_num});
     }
 
     fn load_free_list(self: *Pager) !void {
@@ -312,7 +320,7 @@ pub const Pager = struct {
         }
 
         page.dirty = false;
-        print("[PAGER] Flushed page {} to disk\n", .{page_num});
+        debugPrint("[PAGER] Flushed page {} to disk\n", .{page_num});
     }
 
     pub fn flush(self: *Pager) !void {
@@ -332,7 +340,7 @@ pub const Pager = struct {
         try self.flush();
         if (self.file) |f| {
             try f.sync();
-            print("[PAGER] Synced to disk\n", .{});
+            debugPrint("[PAGER] Synced to disk\n", .{});
         }
     }
 
@@ -355,7 +363,7 @@ pub const Pager = struct {
     }
 
     pub fn debug_print_status(self: *Pager) void {
-        print("[PAGER] Status: {} pages, in_memory={}\n", .{ self.num_pages, self.in_memory });
+        debugPrint("[PAGER] Status: {} pages, in_memory={}\n", .{ self.num_pages, self.in_memory });
         var loaded: u32 = 0;
         var dirty: u32 = 0;
         for (0..MAX_PAGES) |i| {
@@ -364,10 +372,10 @@ pub const Pager = struct {
                 if (p.dirty) dirty += 1;
             }
         }
-        print("[PAGER] Loaded pages: {}, Dirty pages: {}\n", .{ loaded, dirty });
+        debugPrint("[PAGER] Loaded pages: {}, Dirty pages: {}\n", .{ loaded, dirty });
         const stats = self.get_cache_stats();
-        print("[PAGER] Cache hits: {}, misses: {}, ratio: {d:.2}%\n", .{ stats.hits, stats.misses, stats.ratio * 100 });
-        print("[PAGER] Free pages: {}\n", .{self.free_pages.items.len});
+        debugPrint("[PAGER] Cache hits: {}, misses: {}, ratio: {d:.2}%\n", .{ stats.hits, stats.misses, stats.ratio * 100 });
+        debugPrint("[PAGER] Free pages: {}\n", .{self.free_pages.items.len});
     }
 };
 

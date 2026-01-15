@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Pager = @import("pager.zig").Pager;
 const Page = @import("pager.zig").Page;
 const row = @import("row.zig");
@@ -7,7 +8,13 @@ const node = @import("node.zig");
 const Cursor = @import("cursor.zig").Cursor;
 const Schema = @import("schema.zig").Schema;
 
-const print = std.debug.print;
+const DEBUG = builtin.mode == .Debug;
+
+fn debugPrint(comptime fmt: []const u8, args: anytype) void {
+    if (DEBUG) {
+        std.debug.print(fmt, args);
+    }
+}
 
 pub const Btree = struct {
     pager: *Pager,
@@ -31,7 +38,7 @@ pub const Btree = struct {
         node.initialize_leaf_node(page);
         node.set_node_root(page, true);
         self.pager.mark_dirty(self.root_page);
-        print("[BTREE] Initialized root page {}\n", .{self.root_page});
+        debugPrint("[BTREE] Initialized root page {}\n", .{self.root_page});
     }
 
     pub fn search(self: *Btree, key: u32) !Cursor {
@@ -123,7 +130,7 @@ pub const Btree = struct {
         }
 
         try self.insert_leaf(&cursor, key, r);
-        print("[BTREE] Inserted key {} at cell {}\n", .{ key, cursor.cell_num });
+        debugPrint("[BTREE] Inserted key {} at cell {}\n", .{ key, cursor.cell_num });
     }
 
     fn insert_leaf(self: *Btree, cursor: *Cursor, key: u32, r: *const DynamicRow) !void {
@@ -210,7 +217,7 @@ pub const Btree = struct {
 
         self.pager.mark_dirty(cursor.page_num);
         self.pager.mark_dirty(new_page_num);
-        print("[BTREE] Split leaf, new page {}\n", .{new_page_num});
+        debugPrint("[BTREE] Split leaf, new page {}\n", .{new_page_num});
     }
 
     fn create_new_root(self: *Btree, right_child_page_num: u32) !void {
@@ -236,7 +243,7 @@ pub const Btree = struct {
         self.pager.mark_dirty(self.root_page);
         self.pager.mark_dirty(left_child_page_num);
         self.pager.mark_dirty(right_child_page_num);
-        print("[BTREE] Created new root, left={}, right={}\n", .{ left_child_page_num, right_child_page_num });
+        debugPrint("[BTREE] Created new root, left={}, right={}\n", .{ left_child_page_num, right_child_page_num });
     }
 
     pub fn get_max_key(self: *Btree, page: *Page) u32 {
@@ -260,7 +267,7 @@ pub const Btree = struct {
         const node_type = node.get_node_type(page);
         const num_cells = node.get_num_cells(page);
 
-        print("[BTREE] Level {} | Type: {s} | Cells: {}\n", .{
+        debugPrint("[BTREE] Level {} | Type: {s} | Cells: {}\n", .{
             level,
             if (node_type == node.NODE_LEAF) "leaf" else "internal",
             num_cells,
@@ -270,7 +277,7 @@ pub const Btree = struct {
             var i: u32 = 0;
             while (i < num_cells) : (i += 1) {
                 const k = row.get_leaf_key(page, i);
-                print("[BTREE]   Cell {}: key={}\n", .{ i, k });
+                debugPrint("[BTREE]   Cell {}: key={}\n", .{ i, k });
             }
         } else {
             var i: u32 = 0;
@@ -317,7 +324,7 @@ pub const Btree = struct {
             try self.rebalance_after_delete(cursor.page_num);
         }
 
-        print("[BTREE] Deleted key {}\n", .{key});
+        debugPrint("[BTREE] Deleted key {}\n", .{key});
     }
 
     fn min_leaf_cells() u32 {
@@ -508,7 +515,7 @@ pub const Btree = struct {
             self.pager.mark_dirty(parent_num);
         }
 
-        print("[BTREE] Merged leaves {} and {}\n", .{ left_num, right_num });
+        debugPrint("[BTREE] Merged leaves {} and {}\n", .{ left_num, right_num });
     }
 };
 
