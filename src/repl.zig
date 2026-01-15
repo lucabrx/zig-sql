@@ -8,6 +8,316 @@ const VM = @import("vm/vm.zig").VM;
 const RegisterValue = @import("vm/vm.zig").RegisterValue;
 const Pager = @import("storage/pager.zig").Pager;
 const Database = @import("storage/table.zig").Database;
+const posix = std.posix;
+
+const HISTORY_SIZE = 100;
+
+const LineEditor = struct {
+    allocator: std.mem.Allocator,
+    history: std.ArrayList([]const u8),
+    history_pos: usize,
+    line_buf: std.ArrayList(u8),
+    cursor_pos: usize,
+    orig_termios: ?posix.termios,
+    tty: ?std.fs.File,
+
+    const keywords = [_][]const u8{
+        "SELECT",   "FROM",   "WHERE",  "INSERT",   "INTO",       "VALUES", "UPDATE",  "SET",
+        "DELETE",   "CREATE", "TABLE",  "INDEX",    "DROP",       "ALTER",  "BEGIN",   "COMMIT",
+        "ROLLBACK", "ORDER",  "BY",     "ASC",      "DESC",       "LIMIT",  "OFFSET",  "JOIN",
+        "INNER",    "LEFT",   "RIGHT",  "ON",       "AND",        "OR",     "NOT",     "NULL",
+        "PRIMARY",  "KEY",    "UNIQUE", "FOREIGN",  "REFERENCES", "CHECK",  "DEFAULT", "INTEGER",
+        "TEXT",     "REAL",   "BLOB",   "BOOLEAN",  "COUNT",      "SUM",    "AVG",     "MIN",
+        "MAX",      "GROUP",  "HAVING", "DISTINCT", "AS",         "LIKE",   "IN",      "BETWEEN",
+        "CASE",     "WHEN",   "THEN",   "ELSE",     "END",        "UNION",  "VIEW",    "VACUUM",
+    };
+
+    const meta_commands = [_][]const u8{
+        ".exit",  ".help",  ".tables", ".indexes", ".schema", ".views",      ".stats",
+        ".table", ".debug", ".dump",   ".read",    ".import", ".checkpoint", ".sync",
+        ".cache",
+    };
+
+    pub fn init(allocator: std.mem.Allocator) LineEditor {
+        return .{
+            .allocator = allocator,
+            .history = std.ArrayList([]const u8){},
+            .history_pos = 0,
+            .line_buf = std.ArrayList(u8){},
+            .cursor_pos = 0,
+            .orig_termios = null,
+            .tty = null,
+        };
+    }
+
+    pub fn deinit(self: *LineEditor) void {
+        for (self.history.items) |h| {
+            self.allocator.free(h);
+        }
+        self.history.deinit(self.allocator);
+        self.line_buf.deinit(self.allocator);
+        self.disableRawMode();
+        if (self.tty) |tty| tty.close();
+    }
+
+    fn enableRawMode(self: *LineEditor) !void {
+        if (self.tty == null) {
+            self.tty = std.fs.cwd().openFile("/dev/tty", .{ .mode = .read_write }) catch |err| {
+                return err;
+            };
+            const fd = self.tty.?.handle;
+            self.orig_termios = posix.tcgetattr(fd) catch |err| {
+                return err;
+            };
+        }
+        const fd = self.tty.?.handle;
+        var raw = self.orig_termios.?;
+        raw.lflag.ECHO = false;
+        raw.lflag.ICANON = false;
+        raw.lflag.ISIG = false;
+        raw.cc[@intFromEnum(posix.V.MIN)] = 1;
+        raw.cc[@intFromEnum(posix.V.TIME)] = 0;
+        posix.tcsetattr(fd, .FLUSH, raw) catch |err| {
+            return err;
+        };
+    }
+
+    fn disableRawMode(self: *LineEditor) void {
+        if (self.orig_termios) |orig| {
+            if (self.tty) |tty| {
+                posix.tcsetattr(tty.handle, .FLUSH, orig) catch {};
+            }
+        }
+    }
+
+    pub fn readLine(self: *LineEditor, writer: anytype, prompt: []const u8) !?[]const u8 {
+        const stdin_file = std.fs.File.stdin();
+        if (!posix.isatty(stdin_file.handle)) {
+            return self.readLineSimple(writer, prompt);
+        }
+
+        self.enableRawMode() catch {
+            return self.readLineSimple(writer, prompt);
+        };
+        defer self.disableRawMode();
+
+        const tty = self.tty orelse return self.readLineSimple(writer, prompt);
+
+        self.line_buf.clearRetainingCapacity();
+        self.cursor_pos = 0;
+        self.history_pos = self.history.items.len;
+
+        try writer.writeAll(prompt);
+        try writer.flush();
+
+        while (true) {
+            var buf: [4]u8 = undefined;
+            const n = tty.read(&buf) catch break;
+            if (n == 0) break;
+
+            if (buf[0] == '\n' or buf[0] == '\r') {
+                try writer.writeAll("\n");
+                try writer.flush();
+                if (self.line_buf.items.len > 0) {
+                    try self.addHistory(self.line_buf.items);
+                }
+                return try self.allocator.dupe(u8, self.line_buf.items);
+            } else if (buf[0] == 4) {
+                if (self.line_buf.items.len == 0) return null;
+            } else if (buf[0] == 127 or buf[0] == 8) {
+                if (self.cursor_pos > 0) {
+                    _ = self.line_buf.orderedRemove(self.cursor_pos - 1);
+                    self.cursor_pos -= 1;
+                    try self.refreshLine(writer, prompt);
+                }
+            } else if (buf[0] == 27 and n >= 3 and buf[1] == '[') {
+                switch (buf[2]) {
+                    'A' => try self.historyPrev(writer, prompt),
+                    'B' => try self.historyNext(writer, prompt),
+                    'C' => {
+                        if (self.cursor_pos < self.line_buf.items.len) {
+                            self.cursor_pos += 1;
+                            try writer.writeAll("\x1b[C");
+                            try writer.flush();
+                        }
+                    },
+                    'D' => {
+                        if (self.cursor_pos > 0) {
+                            self.cursor_pos -= 1;
+                            try writer.writeAll("\x1b[D");
+                            try writer.flush();
+                        }
+                    },
+                    else => {},
+                }
+            } else if (buf[0] == '\t') {
+                try self.handleTab(writer, prompt);
+            } else if (buf[0] == 1) {
+                self.cursor_pos = 0;
+                try self.refreshLine(writer, prompt);
+            } else if (buf[0] == 5) {
+                self.cursor_pos = self.line_buf.items.len;
+                try self.refreshLine(writer, prompt);
+            } else if (buf[0] == 21) {
+                self.line_buf.clearRetainingCapacity();
+                self.cursor_pos = 0;
+                try self.refreshLine(writer, prompt);
+            } else if (buf[0] >= 32 and buf[0] < 127) {
+                try self.line_buf.insert(self.allocator, self.cursor_pos, buf[0]);
+                self.cursor_pos += 1;
+                try self.refreshLine(writer, prompt);
+            }
+        }
+        return null;
+    }
+
+    fn readLineSimple(self: *LineEditor, writer: anytype, prompt: []const u8) !?[]const u8 {
+        try writer.writeAll(prompt);
+        try writer.flush();
+
+        var stdin_buf: [1024]u8 = undefined;
+        var stdin = std.fs.File.stdin().reader(&stdin_buf);
+        const line = try stdin.interface.takeDelimiter('\n') orelse return null;
+        const trimmed = std.mem.trimRight(u8, line, "\r");
+        if (trimmed.len > 0) {
+            try self.addHistory(trimmed);
+        }
+        return try self.allocator.dupe(u8, trimmed);
+    }
+
+    fn refreshLine(self: *LineEditor, writer: anytype, prompt: []const u8) !void {
+        try writer.writeAll("\r\x1b[K");
+        try writer.writeAll(prompt);
+        try writer.writeAll(self.line_buf.items);
+        const back = self.line_buf.items.len - self.cursor_pos;
+        if (back > 0) {
+            try writer.print("\x1b[{d}D", .{back});
+        }
+        try writer.flush();
+    }
+
+    fn addHistory(self: *LineEditor, line: []const u8) !void {
+        if (line.len == 0) return;
+        if (self.history.items.len > 0) {
+            const last = self.history.items[self.history.items.len - 1];
+            if (std.mem.eql(u8, last, line)) return;
+        }
+        const copy = try self.allocator.dupe(u8, line);
+        if (self.history.items.len >= HISTORY_SIZE) {
+            self.allocator.free(self.history.items[0]);
+            _ = self.history.orderedRemove(0);
+        }
+        try self.history.append(self.allocator, copy);
+    }
+
+    fn historyPrev(self: *LineEditor, writer: anytype, prompt: []const u8) !void {
+        if (self.history.items.len == 0 or self.history_pos == 0) return;
+        self.history_pos -= 1;
+        self.line_buf.clearRetainingCapacity();
+        try self.line_buf.appendSlice(self.allocator, self.history.items[self.history_pos]);
+        self.cursor_pos = self.line_buf.items.len;
+        try self.refreshLine(writer, prompt);
+    }
+
+    fn historyNext(self: *LineEditor, writer: anytype, prompt: []const u8) !void {
+        if (self.history_pos >= self.history.items.len) return;
+        self.history_pos += 1;
+        self.line_buf.clearRetainingCapacity();
+        if (self.history_pos < self.history.items.len) {
+            try self.line_buf.appendSlice(self.allocator, self.history.items[self.history_pos]);
+        }
+        self.cursor_pos = self.line_buf.items.len;
+        try self.refreshLine(writer, prompt);
+    }
+
+    fn handleTab(self: *LineEditor, writer: anytype, prompt: []const u8) !void {
+        if (self.line_buf.items.len == 0) return;
+
+        var word_start: usize = self.cursor_pos;
+        while (word_start > 0 and self.line_buf.items[word_start - 1] != ' ') {
+            word_start -= 1;
+        }
+        const prefix = self.line_buf.items[word_start..self.cursor_pos];
+        if (prefix.len == 0) return;
+
+        var matches = std.ArrayList([]const u8){};
+        defer matches.deinit(self.allocator);
+
+        if (std.mem.startsWith(u8, prefix, ".")) {
+            for (meta_commands) |cmd| {
+                if (startsWithIgnoreCase(cmd, prefix)) {
+                    try matches.append(self.allocator, cmd);
+                }
+            }
+        } else {
+            for (keywords) |kw| {
+                if (startsWithIgnoreCase(kw, prefix)) {
+                    try matches.append(self.allocator, kw);
+                }
+            }
+        }
+
+        if (matches.items.len == 0) {
+            return;
+        } else if (matches.items.len == 1) {
+            const completion = matches.items[0][prefix.len..];
+            for (completion) |c| {
+                try self.line_buf.insert(self.allocator, self.cursor_pos, c);
+                self.cursor_pos += 1;
+            }
+            try self.line_buf.insert(self.allocator, self.cursor_pos, ' ');
+            self.cursor_pos += 1;
+            try self.refreshLine(writer, prompt);
+        } else {
+            const common = findCommonPrefix(matches.items, prefix.len);
+            if (common.len > prefix.len) {
+                const to_add = common[prefix.len..];
+                for (to_add) |c| {
+                    try self.line_buf.insert(self.allocator, self.cursor_pos, c);
+                    self.cursor_pos += 1;
+                }
+                try self.refreshLine(writer, prompt);
+            } else {
+                try writer.writeAll("\r\n");
+                for (matches.items) |m| {
+                    try writer.print("{s}  ", .{m});
+                }
+                try writer.writeAll("\r\n");
+                try writer.flush();
+                try self.refreshLine(writer, prompt);
+            }
+        }
+    }
+
+    fn findCommonPrefix(items: []const []const u8, start: usize) []const u8 {
+        if (items.len == 0) return "";
+        if (items.len == 1) return items[0];
+
+        const first = items[0];
+        var common_len = first.len;
+
+        for (items[1..]) |item| {
+            var i: usize = start;
+            while (i < common_len and i < item.len) {
+                if (std.ascii.toLower(first[i]) != std.ascii.toLower(item[i])) {
+                    break;
+                }
+                i += 1;
+            }
+            common_len = @min(common_len, i);
+        }
+
+        return first[0..common_len];
+    }
+
+    fn startsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len > haystack.len) return false;
+        for (haystack[0..needle.len], needle) |h, n| {
+            if (std.ascii.toLower(h) != std.ascii.toLower(n)) return false;
+        }
+        return true;
+    }
+};
 
 pub const MetaCommandResult = enum {
     Success,
@@ -25,6 +335,7 @@ pub const REPL = struct {
     debug_mode: bool,
     stats_mode: bool,
     table_mode: bool,
+    line_editor: LineEditor,
 
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8, writer: *std.Io.Writer, reader: *std.Io.Reader) REPL {
         return REPL{
@@ -37,6 +348,7 @@ pub const REPL = struct {
             .debug_mode = false,
             .stats_mode = false,
             .table_mode = false,
+            .line_editor = LineEditor.init(allocator),
         };
     }
 
@@ -56,6 +368,7 @@ pub const REPL = struct {
     }
 
     pub fn shutdown(self: *REPL) void {
+        self.line_editor.deinit();
         if (self.db) |db| {
             db.close();
             self.allocator.destroy(db);
@@ -76,15 +389,15 @@ pub const REPL = struct {
         defer stmt_buffer.deinit(self.allocator);
 
         while (true) {
-            if (stmt_buffer.items.len == 0) {
-                _ = try self.writer.write("zql> ");
-            } else {
-                _ = try self.writer.write("...> ");
-            }
-            try self.writer.flush();
+            const prompt = if (stmt_buffer.items.len == 0) "zql> " else "...> ";
 
-            const line = try self.reader.takeDelimiter('\n') orelse break;
-            const trimmed = std.mem.trimRight(u8, line, "\r");
+            const line = self.line_editor.readLine(self.writer, prompt) catch |err| {
+                if (err == error.EndOfStream) break;
+                continue;
+            } orelse break;
+            defer self.allocator.free(line);
+
+            const trimmed = std.mem.trimRight(u8, line, "\r\n");
 
             if (trimmed.len == 0) continue;
 
