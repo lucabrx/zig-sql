@@ -616,10 +616,22 @@ pub const REPL = struct {
         }
 
         var p = parser.Parser.init(tokens, temp_allocator);
-        const stmt = p.parse() catch |err| {
-            try self.writer.print("Parse error: {s}\n", .{@errorName(err)});
+        const stmt = p.parse() catch {
             if (p.hasErrors()) {
-                try p.printErrors(self.writer);
+                for (p.getErrors()) |err| {
+                    try self.writer.print("Error at line {d}, column {d}: {s}\n", .{ err.line, err.column, err.message });
+                    if (err.line == 1 and err.column > 0 and err.column <= input.len) {
+                        try self.writer.print("  {s}\n", .{input});
+                        try self.writer.writeAll("  ");
+                        var i: usize = 1;
+                        while (i < err.column) : (i += 1) {
+                            try self.writer.writeAll(" ");
+                        }
+                        try self.writer.writeAll("^\n");
+                    }
+                }
+            } else {
+                try self.writer.writeAll("Parse error\n");
             }
             return;
         };

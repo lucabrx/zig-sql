@@ -35,6 +35,19 @@ pub fn build(b: *std.Build) void {
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
+    const integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/integration_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    const integration_step = b.step("integration", "Run integration tests");
+    integration_step.dependOn(&run_integration_tests.step);
 }
